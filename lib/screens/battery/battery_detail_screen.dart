@@ -1,0 +1,1035 @@
+// lib/screens/battery/battery_detail_screen.dart
+import 'package:flutter/material.dart';
+import 'dart:developer' as developer;
+import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:flutter/services.dart';
+import '../../models/battery.dart';
+import '../../models/user.dart';
+import '../../services/api_service.dart';
+import '../../constants/colors.dart';
+import 'battery_form.dart';
+
+class BatteryDetailScreen extends StatefulWidget {
+  final Battery battery;
+  final User user;
+
+  const BatteryDetailScreen({
+    super.key,
+    required this.battery,
+    required this.user,
+  });
+
+  @override
+  State<BatteryDetailScreen> createState() => _BatteryDetailScreenState();
+}
+
+class _BatteryDetailScreenState extends State<BatteryDetailScreen> {
+  final ApiService api = ApiService();
+  late Battery _battery;
+  bool _loading = false;
+  bool _dataLoaded = false;
+
+  bool get _isDataValid => _battery.id != null && _battery.id! > 0;
+
+  bool get _canEdit {
+    if (!_isDataValid) return false;
+
+    final status = widget.user.statusUser.toUpperCase();
+    final isOwner = _battery.pic == widget.user.name;
+    final isKoordinatorInBranch =
+        status.contains('KOORDINATOR') && _battery.branch == widget.user.branch;
+    final isAdmin = status.contains('ADMIN');
+
+    return isOwner || isKoordinatorInBranch || isAdmin;
+  }
+
+  bool get _canDelete {
+    if (!_isDataValid) return false;
+
+    final status = widget.user.statusUser.toUpperCase();
+    final isKoordinatorInBranch =
+        status.contains('KOORDINATOR') && _battery.branch == widget.user.branch;
+    final isAdmin = status.contains('ADMIN');
+
+    return isKoordinatorInBranch || isAdmin;
+  }
+
+  String get _editDisabledReason {
+    if (_canEdit) return '';
+    final status = widget.user.statusUser.toUpperCase();
+
+    if (status.contains('ADMIN')) {
+      return 'Admin memiliki izin penuh, namun ada masalah data/izin yang tidak terduga.';
+    }
+    if (status.contains('KOORDINATOR')) {
+      return 'Koordinator hanya bisa mengedit data di branch ${widget.user.branch}.';
+    }
+
+    if (_battery.pic != widget.user.name) {
+      return 'Anda harus login sebagai PIC data ini (${_battery.pic}) untuk mengedit.';
+    }
+
+    return 'Anda tidak memiliki izin untuk mengedit data ini.';
+  }
+
+  String get _deleteDisabledReason {
+    if (_canDelete) return '';
+
+    final status = widget.user.statusUser.toUpperCase();
+    final isOwner = _battery.pic == widget.user.name;
+
+    if (isOwner) {
+      return 'PIC hanya diizinkan mengedit. Hubungi Koordinator/Admin untuk menghapus.';
+    }
+
+    if (status.contains('KOORDINATOR') &&
+        _battery.branch != widget.user.branch) {
+      return 'Koordinator hanya bisa menghapus data di branch ${widget.user.branch}.';
+    }
+
+    return 'Anda tidak memiliki izin untuk menghapus data ini.';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _battery = widget.battery;
+
+    if (_battery.id != null) {
+      _dataLoaded = true;
+      _loadDetail();
+    }
+  }
+
+  // --- HELPER FORMATTING ---
+  String _formatJobType() {
+    final raw = _battery.jobType;
+    if (raw == null) return '-';
+
+    String val = raw.toString();
+    if (val.trim().isEmpty) return '-';
+
+    String clean = val
+        .replaceAll('[', '')
+        .replaceAll(']', '')
+        .replaceAll('"', '')
+        .replaceAll("'", '')
+        .trim();
+
+    if (clean.isEmpty) return '-';
+
+    try {
+      final items = clean
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+
+      if (items.isEmpty) return '-';
+      return items.join(', ');
+    } catch (e) {
+      return clean;
+    }
+  }
+
+  String _fmtDate(String? iso) {
+    if (iso == null || iso.isEmpty) return '-';
+    try {
+      final d = DateTime.parse(iso);
+      return DateFormat('dd MMM yyyy').format(d);
+    } catch (_) {
+      return iso;
+    }
+  }
+
+  // --- WIDGET BUILDERS HELPER ---
+
+  // 🔥 HELPER WARNA UNTUK CHIPS
+  Color _getJobTypeColor(String jobType) {
+    final lower = jobType.toLowerCase();
+    if (lower.contains('troubleshooting')) return Colors.orange;
+    if (lower.contains('install')) return Colors.blue;
+    if (lower.contains('repair')) return Colors.green;
+    if (lower.contains('peremajaan')) return Colors.purple;
+    return Colors.grey;
+  }
+
+  // 🔥 WIDGET CHIPS BUILDER
+  Widget _buildJobTypeChips(String jobTypeString) {
+    if (jobTypeString.isEmpty || jobTypeString == '-') {
+      return const Text('-');
+    }
+
+    final jobTypes = jobTypeString.split(',').map((e) => e.trim()).toList();
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: jobTypes.map((jobType) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: _getJobTypeColor(jobType),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            jobType,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _infoRow(String label, String? value, {bool multiline = false}) {
+    final val = (value == null || value.isEmpty) ? '-' : value;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        crossAxisAlignment: multiline
+            ? CrossAxisAlignment.start
+            : CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 140,
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          Expanded(
+            child: SelectableText(
+              val,
+              style: const TextStyle(color: Colors.black87),
+              maxLines: multiline ? 10 : 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusBadge(String s) {
+    final st = s.toUpperCase();
+    Color color = Colors.grey;
+    if (st.contains('RFU') || st.contains('READY')) {
+      color = Colors.green;
+    } else if (st.contains('BROKEN') || st.contains('BREAK')) {
+      color = Colors.red;
+    } else if (st.contains('MONITOR')) {
+      color = Colors.orange;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withAlpha(50),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        st,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.bold,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
+  // --- API ACTIONS ---
+
+  Future<void> _loadDetail() async {
+    setState(() => _loading = true);
+
+    try {
+      final detail = await api.fetchOneBattery(_battery.id ?? 0);
+      if (mounted) {
+        if (detail != null) {
+          setState(() {
+            _battery = detail;
+            _dataLoaded = true;
+          });
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Detail battery tidak ditemukan.'),
+              backgroundColor: AppColors.error,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal memuat detail: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  Future<void> _deleteBattery() async {
+    if (!_canDelete) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_deleteDisabledReason),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Hapus Battery?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Aksi ini tidak bisa dibatalkan.'),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.withAlpha(30),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                'Record ID: ${_battery.id}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.orange.withAlpha(230),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Hapus', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final res = await api.deleteBattery(_battery.id ?? 0);
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      if (res['ok'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Battery berhasil dihapus'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context, true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal: ${res['message']}'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      developer.log('Delete error: $e');
+    }
+  }
+
+  Future<void> _editBattery() async {
+    if (!_canEdit) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_editDisabledReason),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final updated = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => BatteryForm(battery: _battery, user: widget.user),
+      ),
+    );
+
+    if (updated == true) {
+      await _loadDetail();
+    }
+  }
+
+  Future<void> _copyToClipboard(String text) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Disalin ke clipboard')));
+      }
+    } catch (e) {
+      developer.log('Clipboard error: $e');
+    }
+  }
+
+  String _formatWhatsAppMessage() {
+    final b = _battery;
+    final jobTypeClean = _formatJobType();
+
+    String formatDate(String? dateString) {
+      if (dateString == null || dateString.isEmpty) return '-';
+      try {
+        final date = DateTime.parse(dateString);
+        final days = [
+          'Senin',
+          'Selasa',
+          'Rabu',
+          'Kamis',
+          'Jumat',
+          'Sabtu',
+          'Minggu',
+        ];
+        final months = [
+          'Januari',
+          'Februari',
+          'Maret',
+          'April',
+          'Mei',
+          'Juni',
+          'Juli',
+          'Agustus',
+          'September',
+          'Oktober',
+          'November',
+          'Desember',
+        ];
+        final dayName = days[date.weekday - 1];
+        return '$dayName, ${date.day} ${months[date.month - 1]} ${date.year}';
+      } catch (e) {
+        return dateString;
+      }
+    }
+
+    String formatRecommendations() {
+      if (b.recommendations == null || b.recommendations!.isEmpty) {
+        return '*PART NUMBER :* -\n*PART NAME :* -\n*QTY :* -\n*REMARKS :* -';
+      }
+      final buffer = StringBuffer();
+      for (int i = 0; i < b.recommendations!.length; i++) {
+        final part = b.recommendations![i];
+        if (i > 0) buffer.write('\n');
+        buffer.write('*PART NUMBER :* ${part.partNumber ?? "-"}\n');
+        buffer.write('*PART NAME :* ${part.partName ?? "-"}\n');
+        buffer.write('*QTY :* ${part.qty ?? "-"}\n');
+        buffer.write('*REMARKS :* ${part.remarks ?? "-"}');
+      }
+      return buffer.toString();
+    }
+
+    String formatInstallParts() {
+      if (b.installParts == null || b.installParts!.isEmpty) {
+        return '*PART NUMBER :* -\n*PART NAME :* -\n*QTY :* -\n*NO JOB :* -\n*NO PR :* -\n*REMARKS :* -';
+      }
+      final buffer = StringBuffer();
+      for (int i = 0; i < b.installParts!.length; i++) {
+        final part = b.installParts![i];
+        if (i > 0) buffer.write('\n');
+        buffer.write('*PART NUMBER :* ${part.partNumber ?? "-"}\n');
+        buffer.write('*PART NAME :* ${part.partName ?? "-"}\n');
+        buffer.write('*QTY :* ${part.qty ?? "-"}\n');
+        buffer.write('*NO JOB :* ${part.noJob ?? "-"}');
+        buffer.write('\n*NO PR :* ${part.noPr ?? "-"}');
+        buffer.write('\n*REMARKS :* ${part.remarks ?? "-"}');
+      }
+      return buffer.toString();
+    }
+
+    final message =
+        '''
+🔋 *UPDATE JOB RENTAL* _${b.statusMekanik ?? '-'}_
+${b.categoryJob ?? '-'}
+
+*${b.customer?.toUpperCase() ?? 'CUSTOMER'}*
+*LOCATION :* ${b.location?.toUpperCase() ?? '-'}
+*DATE :* ${formatDate(b.date)}
+*IN :* ${b.inTime ?? '-'}
+*OUT :* ${b.outTime ?? '-'}
+*MAN POWER :* ${b.pic ?? '-'} - ${b.partner ?? '-'}
+*KENDARAAN :* ${b.vehicle ?? '-'} - ${b.nopol ?? '-'}
+
+> _*DETAIL UNIT*_
+*UNIT TYPE :* ${b.unitType ?? '-'}
+*SN UNIT :* ${b.serialNumber ?? '-'}
+
+> _*DETAIL BATTERY*_
+*TYPE :* ${b.batteryType ?? '-'}
+*BATTERY SN :* ${b.snBattery ?? '-'}
+*YEAR :* ${b.batteryYear?.toString() ?? '-'}
+
+> _*JOB DESCRIPTIONS*_
+*CATEGORY :* ${b.categoryJob ?? '-'}
+*JOB TYPE :* $jobTypeClean
+*STATUS :* ${b.statusUnit ?? '-'}
+*PROBLEM DATE :* ${formatDate(b.problemDate)}
+*RFU DATE :* ${formatDate(b.rfuDate)}
+*PROBLEM :* ${b.problem ?? '-'}
+*ACTION :* ${b.action ?? '-'}
+
+> _*RECOMMENDATIONS*_
+${formatRecommendations()}
+
+> _*INSTALL PART*_
+${formatInstallParts()}
+''';
+
+    return message;
+  }
+
+  Future<void> _shareToWhatsApp() async {
+    final b = _battery;
+    if (!_dataLoaded || b.id == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Data belum dimuat atau tidak lengkap')),
+        );
+      }
+      return;
+    }
+
+    try {
+      final message = _formatWhatsAppMessage();
+      await SharePlus.instance.share(
+        ShareParams(
+          text: message,
+          subject:
+              'Battery Detail - ${b.serialNumber ?? b.customer ?? "Unknown"}',
+        ),
+      );
+    } catch (e) {
+      developer.log('Share error: $e');
+      await _copyToClipboard(_formatWhatsAppMessage());
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Pesan disalin ke clipboard')),
+        );
+      }
+    }
+  }
+
+  // --- UI WIDGETS ---
+
+  Widget _buildHeaderCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(
+              _battery.categoryJob ?? 'Battery',
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _battery.customer ?? '-',
+              style: const TextStyle(fontSize: 14, color: Colors.black54),
+            ),
+            const SizedBox(height: 10),
+            if (_battery.statusUnit?.isNotEmpty == true)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _statusBadge(_battery.statusUnit!),
+              ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.person, size: 16, color: Colors.grey),
+                  const SizedBox(width: 8),
+                  SelectableText(
+                    'PIC: ${_battery.pic ?? '-'}',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const Spacer(),
+                  if (_canEdit)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade100,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const SelectableText(
+                        'Dapat Edit',
+                        style: TextStyle(fontSize: 10, color: Colors.green),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBatteryInfoCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Informasi Unit',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.blue,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _infoRow('Customer', _battery.customer),
+            _infoRow('Location', _battery.location),
+            _infoRow('Unit Type', _battery.unitType),
+            _infoRow('Unit SN', _battery.serialNumber),
+
+            const Divider(height: 24),
+            const Text(
+              'Informasi Battery',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.blue,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _infoRow('Battery SN', _battery.snBattery),
+            _infoRow('Battery Type', _battery.batteryType),
+            _infoRow('Battery Year', _battery.batteryYear?.toString()),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 🔥 UPDATE: Menggunakan Chips untuk Job Type di Detail Screen
+  Widget _buildJobStatusCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Status & Job Details',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6.0),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(
+                    width: 140,
+                    child: Text(
+                      'Job Type',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  Expanded(child: _buildJobTypeChips(_formatJobType())),
+                ],
+              ),
+            ),
+
+            _infoRow('Status Unit', _battery.statusUnit),
+            _infoRow('Problem Date', _fmtDate(_battery.problemDate)),
+            _infoRow('RFU Date', _fmtDate(_battery.rfuDate)),
+            const Divider(),
+            _infoRow('Problem', _battery.problem, multiline: true),
+            _infoRow('Action', _battery.action, multiline: true),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecommendationsCard() {
+    if (_battery.recommendations == null || _battery.recommendations!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Recommendations',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _battery.recommendations!.length,
+              separatorBuilder: (_, _) => const Divider(),
+              itemBuilder: (context, index) {
+                final item = _battery.recommendations![index];
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.check_circle,
+                          color: Colors.green,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${item.partNumber ?? '-'} - ${item.partName ?? '-'}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Qty: ${item.qty ?? 0}',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    if (item.remarks?.isNotEmpty == true) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Remarks: ${item.remarks}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInstallPartsCard() {
+    if (_battery.installParts == null || _battery.installParts!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Install Parts',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _battery.installParts!.length,
+              separatorBuilder: (_, _) => const Divider(),
+              itemBuilder: (context, index) {
+                final item = _battery.installParts![index];
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.build, color: Colors.blue, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${item.partNumber ?? '-'} - ${item.partName ?? '-'}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Qty: ${item.qty ?? 0}',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    if (item.noJob?.isNotEmpty == true) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'No Job: ${item.noJob}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                    if (item.noPr?.isNotEmpty == true) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'No PR: ${item.noPr}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                    if (item.remarks?.isNotEmpty == true) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Remarks: ${item.remarks}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetaCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Metadata',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+            _infoRow('Created At', _battery.createdAt),
+            _infoRow('Updated At', _battery.updatedAt),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPermissionWarning() {
+    if (_canEdit && _canDelete) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.withAlpha(25),
+        border: Border.all(color: Colors.orange.withAlpha(50)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info, color: Colors.orange.withAlpha(180), size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Permission Limitation',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange.withAlpha(230),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (!_canEdit)
+            Text(
+              '• Edit: $_editDisabledReason',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.orange.withAlpha(200),
+              ),
+            ),
+          if (!_canDelete) ...[
+            const SizedBox(height: 4),
+            Text(
+              '• Delete: $_deleteDisabledReason',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.orange.withAlpha(200),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {},
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Detail Battery'),
+          backgroundColor: AppColors.primary,
+          foregroundColor: Colors.white,
+          elevation: 2,
+          actions: [
+            if (_canEdit)
+              Tooltip(
+                message: 'Edit',
+                child: IconButton(
+                  onPressed: _editBattery,
+                  icon: const Icon(Icons.edit),
+                ),
+              )
+            else
+              Tooltip(
+                message: _editDisabledReason,
+                child: IconButton(
+                  onPressed: null,
+                  icon: Icon(Icons.edit, color: Colors.grey.withAlpha(76)),
+                ),
+              ),
+            IconButton(
+              onPressed: _loadDetail,
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh Detail',
+            ),
+            if (_canDelete)
+              Tooltip(
+                message: 'Delete',
+                child: IconButton(
+                  onPressed: _deleteBattery,
+                  icon: const Icon(Icons.delete),
+                ),
+              )
+            else
+              Tooltip(
+                message: _deleteDisabledReason,
+                child: IconButton(
+                  onPressed: null,
+                  icon: Icon(Icons.delete, color: Colors.grey.withAlpha(76)),
+                ),
+              ),
+          ],
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (!_canEdit || !_canDelete) _buildPermissionWarning(),
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildHeaderCard(),
+                          const SizedBox(height: 16),
+                          _buildBatteryInfoCard(),
+                          const SizedBox(height: 16),
+                          _buildJobStatusCard(),
+                          const SizedBox(height: 16),
+                          _buildRecommendationsCard(),
+                          if (_battery.recommendations?.isNotEmpty == true)
+                            const SizedBox(height: 16),
+                          _buildInstallPartsCard(),
+                          if (_battery.installParts?.isNotEmpty == true)
+                            const SizedBox(height: 16),
+                          _buildMetaCard(),
+                          const SizedBox(height: 24),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+        floatingActionButton: _dataLoaded && _battery.id != null
+            ? FloatingActionButton(
+                onPressed: _shareToWhatsApp,
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                child: const Icon(Icons.share),
+              )
+            : null,
+      ),
+    );
+  }
+}

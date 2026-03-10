@@ -1,0 +1,215 @@
+// lib/models/battery.dart
+import 'dart:convert';
+
+class Battery {
+  int? id;
+  String? branch;
+  String? statusMekanik;
+  String? pic;
+  String? partner;
+  String? inTime;
+  String? outTime;
+  String? vehicle;
+  String? nopol;
+  String? date;
+  String? serialNumber;
+  String? batteryType;
+  int? year;
+  String? customer;
+  String? location;
+  String? jobType;
+  String? statusUnit;
+  String? problemDate;
+  String? rfuDate;
+  String? problem;
+  String? action;
+  List<PartItem>? recommendations;
+  List<PartItem>? installParts;
+  String? createdAt;
+  String? updatedAt;
+  String? categoryJob;
+
+  Battery({
+    this.id,
+    this.branch,
+    this.statusMekanik,
+    this.pic,
+    this.partner,
+    this.inTime,
+    this.outTime,
+    this.vehicle,
+    this.nopol,
+    this.date,
+    this.serialNumber,
+    this.batteryType,
+    this.year,
+    this.customer,
+    this.location,
+    this.jobType,
+    this.statusUnit,
+    this.problemDate,
+    this.rfuDate,
+    this.problem,
+    this.action,
+    this.recommendations,
+    this.installParts,
+    this.createdAt,
+    this.updatedAt,
+    this.categoryJob,
+  });
+
+  factory Battery.fromJson(Map<String, dynamic> json) {
+    // Safe integer parsing
+    int? parseInt(dynamic value) {
+      if (value == null) return null;
+      if (value is int) return value;
+      if (value is String) {
+        if (value.isEmpty) return null;
+        return int.tryParse(value);
+      }
+      return null;
+    }
+
+    // Safe string parsing
+    String? parseString(dynamic value) {
+      if (value == null) return null;
+      return value.toString();
+    }
+
+    // Parse part items (recommendations/install_parts)
+    List<PartItem> parsePartItems(dynamic data) {
+      if (data == null) return [];
+      if (data is String && data.isEmpty) return [];
+
+      try {
+        final parsed = data is String ? jsonDecode(data) : data;
+        if (parsed is List) {
+          return parsed
+              .map(
+                (e) => PartItem.fromJson(Map<String, dynamic>.from(e as Map)),
+              )
+              .toList();
+        }
+      } catch (e) {
+        return [];
+      }
+      return [];
+    }
+
+    return Battery(
+      id: parseInt(json['id']),
+      branch: parseString(json['branch']),
+      statusMekanik: parseString(json['status_mekanik']),
+      pic: parseString(json['pic']),
+      partner: parseString(json['partner']),
+      inTime: parseString(json['in_time']),
+      outTime: parseString(json['out_time']),
+      vehicle: parseString(json['vehicle']),
+      nopol: parseString(json['nopol']),
+      date: parseString(json['date']),
+      serialNumber: parseString(json['serial_number']),
+      batteryType: parseString(json['battery_type']),
+      year: parseInt(json['year']),
+      customer: parseString(json['customer']),
+      location: parseString(json['location']),
+      jobType: parseString(json['job_type']),
+      statusUnit: parseString(json['status_unit']),
+      problemDate: parseString(json['problem_date']),
+      rfuDate: parseString(json['rfu_date']),
+      problem: parseString(json['problem']),
+      action: parseString(json['action']),
+      recommendations: parsePartItems(json['recommendations_json']),
+      installParts: parsePartItems(json['install_parts_json']),
+      createdAt: parseString(json['created_at']),
+      updatedAt: parseString(json['updated_at']),
+      categoryJob: parseString(json['category_job']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'branch': branch,
+      'status_mekanik': statusMekanik,
+      'pic': pic,
+      'partner': partner,
+      'in_time': inTime,
+      'out_time': outTime,
+      'vehicle': vehicle,
+      'nopol': nopol,
+      'date': date,
+      'serial_number': serialNumber,
+      'battery_type': batteryType,
+      'year': year,
+      'customer': customer,
+      'location': location,
+      'job_type': jobType,
+      'status_unit': statusUnit,
+      'problem_date': problemDate,
+      'rfu_date': rfuDate,
+      'problem': problem,
+      'action': action,
+      'recommendations_json': recommendations?.map((e) => e.toJson()).toList(),
+      'install_parts_json': installParts?.map((e) => e.toJson()).toList(),
+      'category_job': categoryJob,
+    };
+  }
+}
+
+class PartItem {
+  String? partNumber;
+  String? partName;
+  int? qty;
+  String? noJob;
+  String? noPr;
+  String? remarks;
+
+  PartItem({
+    this.partNumber,
+    this.partName,
+    this.qty,
+    this.noJob,
+    this.noPr,
+    this.remarks,
+  });
+
+  factory PartItem.fromJson(Map<String, dynamic> json) {
+    // Safe integer parsing
+    int? parseInt(dynamic value) {
+      if (value == null) return null;
+      if (value is int) return value;
+      if (value is String) {
+        if (value.isEmpty) return null;
+        return int.tryParse(value);
+      }
+      return null;
+    }
+
+    // Safe string parsing
+    String? parseString(dynamic value) {
+      if (value == null) return null;
+      if (value is String && value.isEmpty) return null;
+      return value.toString();
+    }
+
+    return PartItem(
+      partNumber: parseString(json['part_number'] ?? json['partNumber']),
+      partName: parseString(json['part_name'] ?? json['partName']),
+      qty: parseInt(json['qty']),
+      noJob: parseString(json['no_job'] ?? json['noJob']),
+      noPr: parseString(json['no_pr'] ?? json['noPr']),
+      remarks: parseString(json['remarks']),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'part_number': partNumber,
+      'part_name': partName,
+      'qty': qty,
+      'no_job': noJob,
+      'no_pr': noPr,
+      'remarks': remarks,
+    };
+  }
+}

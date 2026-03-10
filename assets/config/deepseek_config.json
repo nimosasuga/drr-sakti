@@ -1,0 +1,5 @@
+{
+  "apiKey": "sk-b031398a684f443a8d2f24526b8eb9df",
+  "baseUrl": "https://api.deepseek.com",
+  "allowedTopics": ["Update Job", "Unit Assets", "Delivery", "Penarikan", "Charger", "Battery"]
+}

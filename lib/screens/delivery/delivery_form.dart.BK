@@ -1,0 +1,635 @@
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import '../../models/user.dart';
+import '../../models/delivery.dart';
+import '../../services/api_service.dart';
+
+class DeliveryForm extends StatefulWidget {
+  final User user;
+  final DeliveryUnit? delivery;
+
+  const DeliveryForm({Key? key, required this.user, this.delivery})
+    : super(key: key);
+
+  @override
+  State<DeliveryForm> createState() => _DeliveryFormState();
+}
+
+class _DeliveryFormState extends State<DeliveryForm> {
+  final _formKey = GlobalKey<FormState>();
+  final ApiService _apiService = ApiService();
+  bool _isLoading = false;
+
+  // Controllers
+  late TextEditingController _serialNumberCtrl;
+  late TextEditingController _unitTypeCtrl;
+  late TextEditingController _yearCtrl;
+  late TextEditingController _hourMeterCtrl;
+  late TextEditingController _customerCtrl;
+  late TextEditingController _locationCtrl;
+  late TextEditingController _picCtrl;
+  late TextEditingController _partnerCtrl;
+  late TextEditingController _vehicleCtrl;
+  late TextEditingController _nopolCtrl;
+  late TextEditingController _inTimeCtrl;
+  late TextEditingController _outTimeCtrl;
+  late TextEditingController _batteryTypeCtrl;
+  late TextEditingController _batterySnCtrl;
+  late TextEditingController _chargerTypeCtrl;
+  late TextEditingController _chargerSnCtrl;
+  late TextEditingController _trollyCtrl;
+  late TextEditingController _noteCtrl;
+
+  // Dropdown values
+  late String _selectedBranch;
+  late String _selectedStatusMekanik;
+  late String _selectedStatusUnit;
+  late DateTime _selectedDate;
+  late List<String> _selectedJobTypes;
+
+  final List<String> _statusMekanikOptions = [
+    'READY',
+    'IN SERVICE',
+    'MAINTENANCE',
+  ];
+  final List<String> _statusUnitOptions = ['RFU', 'NOT RFU', 'PENDING'];
+  final List<String> _jobTypeOptions = ['PREVENTIVE', 'REPAIR', 'INSPECTION'];
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeControllers();
+    _initializeValues();
+  }
+
+  void _initializeControllers() {
+    _serialNumberCtrl = TextEditingController(
+      text: widget.delivery?.serialNumber ?? '',
+    );
+    _unitTypeCtrl = TextEditingController(
+      text: widget.delivery?.unitType ?? '',
+    );
+    _yearCtrl = TextEditingController(
+      text: widget.delivery?.year?.toString() ?? '',
+    );
+    _hourMeterCtrl = TextEditingController(
+      text: widget.delivery?.hourMeter?.toString() ?? '',
+    );
+    _customerCtrl = TextEditingController(
+      text: widget.delivery?.customer ?? '',
+    );
+    _locationCtrl = TextEditingController(
+      text: widget.delivery?.location ?? '',
+    );
+    _picCtrl = TextEditingController(text: widget.delivery?.pic ?? '');
+    _partnerCtrl = TextEditingController(text: widget.delivery?.partner ?? '');
+    _vehicleCtrl = TextEditingController(text: widget.delivery?.vehicle ?? '');
+    _nopolCtrl = TextEditingController(text: widget.delivery?.nopol ?? '');
+    _inTimeCtrl = TextEditingController(text: widget.delivery?.inTime ?? '');
+    _outTimeCtrl = TextEditingController(text: widget.delivery?.outTime ?? '');
+    _batteryTypeCtrl = TextEditingController(
+      text: widget.delivery?.batteryType ?? '',
+    );
+    _batterySnCtrl = TextEditingController(
+      text: widget.delivery?.batterySn ?? '',
+    );
+    _chargerTypeCtrl = TextEditingController(
+      text: widget.delivery?.chargerType ?? '',
+    );
+    _chargerSnCtrl = TextEditingController(
+      text: widget.delivery?.chargerSn ?? '',
+    );
+    _trollyCtrl = TextEditingController(text: widget.delivery?.trolly ?? '');
+    _noteCtrl = TextEditingController(text: widget.delivery?.note ?? '');
+  }
+
+  void _initializeValues() {
+    _selectedBranch = widget.delivery?.branch ?? widget.user.branch;
+    _selectedStatusMekanik = widget.delivery?.statusMekanik ?? 'READY';
+    _selectedStatusUnit = widget.delivery?.statusUnit ?? 'RFU';
+    _selectedDate = widget.delivery?.date ?? DateTime.now();
+    _selectedJobTypes = widget.delivery?.jobType ?? [];
+  }
+
+  @override
+  void dispose() {
+    _serialNumberCtrl.dispose();
+    _unitTypeCtrl.dispose();
+    _yearCtrl.dispose();
+    _hourMeterCtrl.dispose();
+    _customerCtrl.dispose();
+    _locationCtrl.dispose();
+    _picCtrl.dispose();
+    _partnerCtrl.dispose();
+    _vehicleCtrl.dispose();
+    _nopolCtrl.dispose();
+    _inTimeCtrl.dispose();
+    _outTimeCtrl.dispose();
+    _batteryTypeCtrl.dispose();
+    _batterySnCtrl.dispose();
+    _chargerTypeCtrl.dispose();
+    _chargerSnCtrl.dispose();
+    _trollyCtrl.dispose();
+    _noteCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _selectDate() async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null && picked != _selectedDate) {
+      setState(() => _selectedDate = picked);
+    }
+  }
+
+  Future<void> _selectTime(TextEditingController controller) async {
+    final TimeOfDay? picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+    );
+    if (picked != null) {
+      setState(() {
+        controller.text = picked.format(context);
+      });
+    }
+  }
+
+  void _toggleJobType(String jobType) {
+    setState(() {
+      if (_selectedJobTypes.contains(jobType)) {
+        _selectedJobTypes.remove(jobType);
+      } else {
+        _selectedJobTypes.add(jobType);
+      }
+    });
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.red),
+    );
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), backgroundColor: Colors.green),
+    );
+  }
+
+  Future<void> _submitForm() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final delivery = DeliveryUnit(
+        id: widget.delivery?.id,
+        branch: _selectedBranch,
+        statusMekanik: _selectedStatusMekanik,
+        pic: _picCtrl.text,
+        partner: _partnerCtrl.text,
+        inTime: _inTimeCtrl.text,
+        outTime: _outTimeCtrl.text,
+        vehicle: _vehicleCtrl.text,
+        nopol: _nopolCtrl.text,
+        date: _selectedDate,
+        customer: _customerCtrl.text,
+        location: _locationCtrl.text,
+        serialNumber: _serialNumberCtrl.text,
+        unitType: _unitTypeCtrl.text,
+        year: int.tryParse(_yearCtrl.text),
+        hourMeter: int.tryParse(_hourMeterCtrl.text),
+        jobType: _selectedJobTypes,
+        statusUnit: _selectedStatusUnit,
+        batteryType: _batteryTypeCtrl.text,
+        batterySn: _batterySnCtrl.text,
+        chargerType: _chargerTypeCtrl.text,
+        chargerSn: _chargerSnCtrl.text,
+        trolly: _trollyCtrl.text,
+        note: _noteCtrl.text,
+      );
+
+      late Map<String, dynamic> result;
+
+      if (widget.delivery == null) {
+        result = await _apiService.createDelivery(delivery);
+      } else {
+        result = await _apiService.updateDelivery(delivery);
+      }
+
+      if (result['ok'] == true) {
+        _showSuccess(result['message'] ?? 'Success');
+        Navigator.pop(context, true);
+      } else {
+        _showError(result['message'] ?? 'Failed to save delivery');
+      }
+    } catch (e) {
+      _showError('Error: $e');
+    } finally {
+      setState(() => _isLoading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.delivery == null ? 'Create Delivery' : 'Edit Delivery',
+        ),
+        backgroundColor: Colors.purple,
+      ),
+      body: Form(
+        key: _formKey,
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            // Unit Information Section
+            _buildSectionHeader('Unit Information'),
+            _buildTextFormField(
+              controller: _serialNumberCtrl,
+              label: 'Serial Number',
+              hint: 'Enter serial number',
+              validator: (value) => value?.isEmpty ?? true ? 'Required' : null,
+              prefixIcon: Icons.numbers,
+            ),
+            _buildTextFormField(
+              controller: _unitTypeCtrl,
+              label: 'Unit Type',
+              hint: 'e.g., Forklift, Excavator',
+              prefixIcon: Icons.category,
+            ),
+            Row(
+              children: [
+                Expanded(
+                  child: _buildTextFormField(
+                    controller: _yearCtrl,
+                    label: 'Year',
+                    hint: '2023',
+                    keyboardType: TextInputType.number,
+                    prefixIcon: Icons.calendar_today,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: _buildTextFormField(
+                    controller: _hourMeterCtrl,
+                    label: 'Hour Meter',
+                    hint: '0',
+                    keyboardType: TextInputType.number,
+                    prefixIcon: Icons.speed,
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 24),
+
+            // Customer Information
+            _buildSectionHeader('Customer & Location'),
+            _buildTextFormField(
+              controller: _customerCtrl,
+              label: 'Customer',
+              hint: 'Enter customer name',
+              validator: (value) => value?.isEmpty ?? true ? 'Required' : null,
+              prefixIcon: Icons.business,
+            ),
+            _buildTextFormField(
+              controller: _locationCtrl,
+              label: 'Location',
+              hint: 'Enter location',
+              validator: (value) => value?.isEmpty ?? true ? 'Required' : null,
+              prefixIcon: Icons.location_on,
+            ),
+
+            const SizedBox(height: 24),
+
+            // Delivery Information
+            _buildSectionHeader('Delivery Information'),
+            _buildDateFormField(),
+            _buildDropdownFormField(
+              value: _selectedStatusMekanik,
+              label: 'Status Mekanik',
+              items: _statusMekanikOptions,
+              onChanged: (value) =>
+                  setState(() => _selectedStatusMekanik = value ?? 'READY'),
+            ),
+            _buildTextFormField(
+              controller: _picCtrl,
+              label: 'PIC (Person in Charge)',
+              hint: 'Enter PIC name',
+              prefixIcon: Icons.person,
+            ),
+            _buildTextFormField(
+              controller: _partnerCtrl,
+              label: 'Partner',
+              hint: 'Enter partner name',
+              prefixIcon: Icons.group,
+            ),
+
+            const SizedBox(height: 16),
+
+            Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => _selectTime(_inTimeCtrl),
+                    child: _buildTimeField(_inTimeCtrl, 'In Time'),
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: GestureDetector(
+                    onTap: () => _selectTime(_outTimeCtrl),
+                    child: _buildTimeField(_outTimeCtrl, 'Out Time'),
+                  ),
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 24),
+
+            // Vehicle Information
+            _buildSectionHeader('Vehicle Information'),
+            _buildTextFormField(
+              controller: _vehicleCtrl,
+              label: 'Vehicle',
+              hint: 'Enter vehicle name',
+              prefixIcon: Icons.local_shipping,
+            ),
+            _buildTextFormField(
+              controller: _nopolCtrl,
+              label: 'Nomor Polisi',
+              hint: 'Enter license plate',
+              prefixIcon: Icons.confirmation_number,
+            ),
+
+            const SizedBox(height: 24),
+
+            // Battery & Charger
+            _buildSectionHeader('Battery & Charger'),
+            _buildTextFormField(
+              controller: _batteryTypeCtrl,
+              label: 'Battery Type',
+              hint: 'e.g., Lithium-ion',
+              prefixIcon: Icons.battery_charging_full,
+            ),
+            _buildTextFormField(
+              controller: _batterySnCtrl,
+              label: 'Battery SN',
+              hint: 'Battery serial number',
+              prefixIcon: Icons.numbers,
+            ),
+            _buildTextFormField(
+              controller: _chargerTypeCtrl,
+              label: 'Charger Type',
+              hint: 'e.g., Fast Charger',
+              prefixIcon: Icons.electrical_services,
+            ),
+            _buildTextFormField(
+              controller: _chargerSnCtrl,
+              label: 'Charger SN',
+              hint: 'Charger serial number',
+              prefixIcon: Icons.numbers,
+            ),
+            _buildTextFormField(
+              controller: _trollyCtrl,
+              label: 'Trolly',
+              hint: 'Enter trolly information',
+              prefixIcon: Icons.luggage,
+            ),
+
+            const SizedBox(height: 24),
+
+            // Job Type & Status
+            _buildSectionHeader('Job Type & Status'),
+            _buildJobTypeChips(),
+            _buildDropdownFormField(
+              value: _selectedStatusUnit,
+              label: 'Status Unit',
+              items: _statusUnitOptions,
+              onChanged: (value) =>
+                  setState(() => _selectedStatusUnit = value ?? 'RFU'),
+            ),
+
+            const SizedBox(height: 24),
+
+            // Notes
+            _buildSectionHeader('Notes'),
+            _buildTextFormField(
+              controller: _noteCtrl,
+              label: 'Notes',
+              hint: 'Enter any additional notes',
+              maxLines: 4,
+              prefixIcon: Icons.note,
+            ),
+
+            const SizedBox(height: 32),
+
+            // Submit Button
+            ElevatedButton(
+              onPressed: _isLoading ? null : _submitForm,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.purple,
+                padding: const EdgeInsets.symmetric(vertical: 16),
+              ),
+              child: _isLoading
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                      ),
+                    )
+                  : Text(
+                      widget.delivery == null
+                          ? 'Create Delivery'
+                          : 'Update Delivery',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+            ),
+
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionHeader(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16, top: 8),
+      child: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+          color: Colors.black87,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTextFormField({
+    required TextEditingController controller,
+    required String label,
+    required String hint,
+    IconData? prefixIcon,
+    int maxLines = 1,
+    TextInputType keyboardType = TextInputType.text,
+    String? Function(String?)? validator,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: TextFormField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          prefixIcon: prefixIcon != null ? Icon(prefixIcon) : null,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 12,
+          ),
+        ),
+        keyboardType: keyboardType,
+        maxLines: maxLines,
+        validator: validator,
+      ),
+    );
+  }
+
+  Widget _buildDropdownFormField({
+    required String value,
+    required String label,
+    required List<String> items,
+    required Function(String?) onChanged,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: DropdownButtonFormField<String>(
+        value: value,
+        decoration: InputDecoration(
+          labelText: label,
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 12,
+          ),
+        ),
+        items: items
+            .map((item) => DropdownMenuItem(value: item, child: Text(item)))
+            .toList(),
+        onChanged: onChanged,
+      ),
+    );
+  }
+
+  Widget _buildDateFormField() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: GestureDetector(
+        onTap: _selectDate,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.grey),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Delivery Date',
+                    style: TextStyle(color: Colors.grey[600], fontSize: 12),
+                  ),
+                  Text(
+                    DateFormat('yyyy-MM-dd').format(_selectedDate),
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
+              ),
+              Icon(Icons.calendar_today, color: Colors.purple),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTimeField(TextEditingController controller, String label) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        border: Border.all(color: Colors.grey),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+          Text(
+            controller.text.isEmpty ? 'Select time' : controller.text,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildJobTypeChips() {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Job Type',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey[600],
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            children: _jobTypeOptions
+                .map(
+                  (jobType) => FilterChip(
+                    label: Text(jobType),
+                    selected: _selectedJobTypes.contains(jobType),
+                    onSelected: (_) => _toggleJobType(jobType),
+                    backgroundColor: Colors.grey[200],
+                    selectedColor: Colors.purple.withOpacity(0.7),
+                    labelStyle: TextStyle(
+                      color: _selectedJobTypes.contains(jobType)
+                          ? Colors.white
+                          : Colors.black87,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}

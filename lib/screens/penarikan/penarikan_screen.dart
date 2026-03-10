@@ -1,0 +1,820 @@
+// lib/screens/penarikan/penarikan_screen.dart
+import 'dart:io';
+import 'dart:developer';
+import 'package:flutter/material.dart';
+import 'package:excel/excel.dart' as excel_pkg; // Alias untuk package excel
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+
+import '../../models/penarikan.dart';
+import '../../models/user.dart';
+import '../../services/api_service.dart';
+import '../../services/ad_service.dart'; // Import AdService
+import '../../constants/colors.dart';
+import '../../constants/typography.dart';
+import 'penarikan_detail_screen.dart';
+import 'penarikan_form.dart';
+import '../../widgets/custom_app_bar.dart';
+
+class PenarikanScreen extends StatefulWidget {
+  final User user;
+  final String? picFilterName;
+  const PenarikanScreen({super.key, required this.user, this.picFilterName});
+
+  @override
+  State<PenarikanScreen> createState() => _PenarikanScreenState();
+}
+
+class _PenarikanScreenState extends State<PenarikanScreen> {
+  final ApiService api = ApiService();
+  final AdService _adService = AdService(); // Init AdService
+  final TextEditingController _searchController = TextEditingController();
+
+  List<Penarikan> _allPenarikan = [];
+  List<Penarikan> _filteredPenarikan = [];
+  bool _loading = false;
+  String _searchQuery = '';
+  String? _error;
+
+  Map<String, List<Penarikan>> _groupedPenarikan = {};
+  Set<String> _expandedMonths = {};
+  bool get _isPicFilterActive => widget.picFilterName?.isNotEmpty == true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPenarikan();
+    _loadAds(); // Load Iklan saat init
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  Future<void> _loadAds() async {
+    await _adService.loadInterstitialAd();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    final query = _searchController.text.trim();
+    if (query == _searchQuery) return;
+    setState(() => _searchQuery = query);
+    _applyFilter();
+  }
+
+  void _applyFilter() {
+    final q = _searchQuery.toLowerCase();
+
+    // TAMBAHKAN INI: Base list dengan filter PIC
+    List<Penarikan> baseList = _allPenarikan;
+    if (q.isEmpty) {
+      setState(() => _filteredPenarikan = List.from(baseList));
+    } else {
+      setState(() {
+        _filteredPenarikan = baseList.where((p) {
+          final serial = (p.serialNumber ?? '').toLowerCase();
+          final customer = (p.customer ?? '').toLowerCase();
+          final branch = (p.branch ?? '').toLowerCase();
+          final status = (p.statusUnit ?? '').toLowerCase();
+          final pic = (p.pic ?? '').toLowerCase();
+
+          return serial.contains(q) ||
+              customer.contains(q) ||
+              branch.contains(q) ||
+              status.contains(q) ||
+              pic.contains(q);
+        }).toList();
+      });
+    }
+    _groupPenarikanByMonth();
+  }
+
+  void _groupPenarikanByMonth() {
+    final Map<String, List<Penarikan>> grouped = {};
+
+    for (final penarikan in _filteredPenarikan) {
+      final monthKey = _getMonthKey(penarikan.date ?? penarikan.createdAt);
+      if (!grouped.containsKey(monthKey)) {
+        grouped[monthKey] = [];
+      }
+      grouped[monthKey]!.add(penarikan);
+    }
+
+    final Map<String, DateTime> monthDates = {};
+    for (final key in grouped.keys) {
+      monthDates[key] = _parseMonthKeyToDate(key);
+    }
+
+    final sortedKeys = grouped.keys.toList()
+      ..sort((a, b) => monthDates[b]!.compareTo(monthDates[a]!));
+
+    final sortedMap = <String, List<Penarikan>>{};
+    for (final key in sortedKeys) {
+      grouped[key]!.sort((a, b) {
+        final dateA = _parseDate(a.date ?? a.createdAt);
+        final dateB = _parseDate(b.date ?? b.createdAt);
+        return dateB.compareTo(dateA);
+      });
+      sortedMap[key] = grouped[key]!;
+    }
+
+    setState(() {
+      _groupedPenarikan = sortedMap;
+      if (_groupedPenarikan.isNotEmpty && _expandedMonths.isEmpty) {
+        _expandedMonths = {_groupedPenarikan.keys.first};
+      }
+    });
+  }
+
+  String _getMonthKey(String? dateString) {
+    if (dateString == null || dateString.isEmpty) {
+      return 'Unknown Date';
+    }
+
+    try {
+      final date = DateTime.parse(dateString);
+      return '${_getMonthName(date.month)} ${date.year}';
+    } catch (e) {
+      return 'Unknown Date';
+    }
+  }
+
+  String _getMonthName(int month) {
+    switch (month) {
+      case 1:
+        return 'Januari';
+      case 2:
+        return 'Februari';
+      case 3:
+        return 'Maret';
+      case 4:
+        return 'April';
+      case 5:
+        return 'Mei';
+      case 6:
+        return 'Juni';
+      case 7:
+        return 'Juli';
+      case 8:
+        return 'Agustus';
+      case 9:
+        return 'September';
+      case 10:
+        return 'Oktober';
+      case 11:
+        return 'November';
+      case 12:
+        return 'Desember';
+      default:
+        return 'Unknown';
+    }
+  }
+
+  int _getMonthNumber(String monthName) {
+    switch (monthName) {
+      case 'Januari':
+        return 1;
+      case 'Februari':
+        return 2;
+      case 'Maret':
+        return 3;
+      case 'April':
+        return 4;
+      case 'Mei':
+        return 5;
+      case 'Juni':
+        return 6;
+      case 'Juli':
+        return 7;
+      case 'Agustus':
+        return 8;
+      case 'September':
+        return 9;
+      case 'Oktober':
+        return 10;
+      case 'November':
+        return 11;
+      case 'Desember':
+        return 12;
+      default:
+        return 1;
+    }
+  }
+
+  DateTime _parseMonthKeyToDate(String monthKey) {
+    if (monthKey == 'Unknown Date') return DateTime(1970);
+    try {
+      final parts = monthKey.split(' ');
+      final monthName = parts[0];
+      final year = int.tryParse(parts[1]) ?? 1970;
+      final month = _getMonthNumber(monthName);
+      return DateTime(year, month, 1);
+    } catch (e) {
+      return DateTime(1970);
+    }
+  }
+
+  DateTime _parseDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) {
+      return DateTime(1970);
+    }
+    try {
+      return DateTime.parse(dateString);
+    } catch (e) {
+      return DateTime(1970);
+    }
+  }
+
+  void _toggleMonthExpansion(String monthKey) {
+    setState(() {
+      if (_expandedMonths.contains(monthKey)) {
+        _expandedMonths.remove(monthKey);
+      } else {
+        _expandedMonths.add(monthKey);
+      }
+    });
+  }
+
+  Future<void> _loadPenarikan() async {
+    // ✅ FIX 1: SET LOADING TRUE DI AWAL
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final fetchedPenarikan = await api.fetchPenarikanByBranch(
+        widget.user.branch,
+      );
+
+      List<Penarikan> finalPenarikan = fetchedPenarikan;
+
+      // ✅ FIX 2: Filter PIC jika aktif
+      if (_isPicFilterActive) {
+        final String finalPicName = widget.picFilterName!.trim().toLowerCase();
+
+        finalPenarikan = fetchedPenarikan
+            .where((p) => p.pic?.trim().toLowerCase() == finalPicName)
+            .toList();
+      }
+
+      _allPenarikan = finalPenarikan;
+      _filteredPenarikan = finalPenarikan;
+
+      // ✅ FIX 3: Set state setelah berhasil memuat data
+      if (!mounted) return;
+      setState(() {
+        _loading = false; // SET FALSE SETELAH BERHASIL
+      });
+      _groupPenarikanByMonth();
+    } catch (e) {
+      // <-- Sekarang hanya ada SATU blok catch log('Error loading penarikan: $e');
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _allPenarikan = [];
+        _filteredPenarikan = [];
+        _groupedPenarikan = {};
+        _loading = false; // ✅ SET FALSE SAAT ERROR
+      });
+      _showSnackBar('Gagal memuat penarikan: $e', AppColors.error);
+    }
+  }
+
+  // ==========================================
+  // FITUR EXPORT EXCEL
+  // ==========================================
+
+  bool get _canExport {
+    final role = widget.user.statusUser.toUpperCase();
+    return role.contains('ADMIN DRR') ||
+        role.contains('KOORDINATOR') ||
+        role.contains('PLANNER');
+  }
+
+  Future<void> _exportToExcel() async {
+    // 1. Tampilkan Iklan Interstitial
+    await _adService.initialize();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Menyiapkan file Excel...'),
+        duration: Duration(seconds: 2),
+      ),
+    );
+
+    try {
+      // 2. Buat Instance Excel
+      var excelFile = excel_pkg.Excel.createExcel();
+      // Rename sheet default atau buat baru
+      excel_pkg.Sheet sheet = excelFile['Penarikan Data'];
+      // Hapus sheet default 'Sheet1' jika tidak dibutuhkan
+      if (excelFile.sheets.containsKey('Sheet1')) {
+        excelFile.delete('Sheet1');
+      }
+
+      // 3. Definisi Header Kolom
+      List<String> headers = [
+        'id',
+        'branch',
+        'status_mekanik',
+        'pic',
+        'partner',
+        'in_time',
+        'out_time',
+        'vehicle',
+        'nopol',
+        'date',
+        'customer',
+        'location',
+        'serial_number',
+        'unit_type',
+        'year',
+        'hour_meter',
+        'job_type',
+        'status_unit',
+        'battery_type',
+        'battery_sn',
+        'charger_type',
+        'charger_sn',
+        'trolly',
+        'note',
+        'created_at',
+        'updated_at',
+      ];
+
+      // Tulis Header
+      sheet.appendRow(headers.map((e) => excel_pkg.TextCellValue(e)).toList());
+
+      // 4. Isi Data
+      for (var p in _filteredPenarikan) {
+        // Format Job Type (List to String)
+        String jobTypeStr = '-';
+        if (p.jobType != null && p.jobType!.isNotEmpty) {
+          jobTypeStr = p.jobType!.join(', ');
+        }
+
+        List<excel_pkg.CellValue> row = [
+          excel_pkg.TextCellValue(p.id ?? '-'),
+          excel_pkg.TextCellValue(p.branch ?? '-'),
+          excel_pkg.TextCellValue(p.statusMekanik ?? '-'),
+          excel_pkg.TextCellValue(p.pic ?? '-'),
+          excel_pkg.TextCellValue(p.partner ?? '-'),
+          excel_pkg.TextCellValue(p.inTime ?? '-'),
+          excel_pkg.TextCellValue(p.outTime ?? '-'),
+          excel_pkg.TextCellValue(p.vehicle ?? '-'),
+          excel_pkg.TextCellValue(p.nopol ?? '-'),
+          excel_pkg.TextCellValue(p.date ?? '-'),
+          excel_pkg.TextCellValue(p.customer ?? '-'),
+          excel_pkg.TextCellValue(p.location ?? '-'),
+          excel_pkg.TextCellValue(p.serialNumber ?? '-'),
+          excel_pkg.TextCellValue(p.unitType ?? '-'),
+          excel_pkg.TextCellValue(p.year?.toString() ?? '-'),
+          excel_pkg.TextCellValue(p.hourMeter ?? '-'),
+          excel_pkg.TextCellValue(jobTypeStr),
+          excel_pkg.TextCellValue(p.statusUnit ?? '-'),
+          excel_pkg.TextCellValue(p.batteryType ?? '-'),
+          excel_pkg.TextCellValue(p.batterySn ?? '-'),
+          excel_pkg.TextCellValue(p.chargerType ?? '-'),
+          excel_pkg.TextCellValue(p.chargerSn ?? '-'),
+          excel_pkg.TextCellValue(p.trolly ?? '-'),
+          excel_pkg.TextCellValue(p.note ?? '-'),
+          excel_pkg.TextCellValue(p.createdAt ?? '-'),
+          excel_pkg.TextCellValue(p.updatedAt ?? '-'),
+        ];
+        sheet.appendRow(row);
+      }
+
+      // 5. Simpan dan Share
+      final directory = await getTemporaryDirectory();
+      final fileName =
+          "penarikan_data_${DateTime.now().millisecondsSinceEpoch}.xlsx";
+      final path = "${directory.path}/$fileName";
+      final file = File(path);
+      final fileBytes = excelFile.save();
+
+      if (fileBytes != null) {
+        await file.writeAsBytes(fileBytes);
+        if (!mounted) return;
+
+        // 🚀 PERBAIKAN: Menggunakan SharePlus.instance.share() dengan ShareParams
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(path)],
+            // Mengganti parameter `text` lama dengan `subject`
+            subject: 'Export Data Penarikan',
+          ),
+        );
+      }
+    } catch (e) {
+      log('Error exporting excel: $e');
+      _showSnackBar('Gagal export excel: $e', AppColors.error);
+    }
+  }
+
+  void _showSnackBar(String message, Color color) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message), backgroundColor: color));
+  }
+
+  PreferredSizeWidget _buildAppBar() {
+    return CustomAppBar(
+      title: 'Penarikan Units',
+      subtitle: '${widget.user.name} • ${widget.user.branch}',
+      actions: [UserRoleBadge(role: widget.user.statusUser)],
+      bottom: SearchAppBarBottom(
+        searchController: _searchController,
+        hintText: 'Cari serial, customer, PIC...',
+        itemCount: _filteredPenarikan.length,
+        groupCount: _groupedPenarikan.length,
+        onRefresh: _loadPenarikan,
+        showGroupCount: true,
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge(String? status) {
+    final statusData = _getStatusData(status ?? '');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: statusData.color.withAlpha(38),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(statusData.icon, size: 12, color: statusData.color),
+          const SizedBox(width: 4),
+          SelectableText(
+            statusData.label,
+            style: TextStyle(
+              color: statusData.color,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  ({String label, Color color, IconData icon}) _getStatusData(String status) {
+    switch (status.toUpperCase()) {
+      case 'RFU':
+        return (label: 'RFU', color: AppColors.rfu, icon: Icons.check_circle);
+      case 'BREAKDOWN':
+        return (
+          label: 'BREAKDOWN',
+          color: AppColors.breakdown,
+          icon: Icons.error,
+        );
+      case 'MONITORING':
+        return (
+          label: 'MONITORING',
+          color: AppColors.monitoring,
+          icon: Icons.remove_red_eye,
+        );
+      case 'WAITING PART':
+        return (
+          label: 'WAITING PART',
+          color: AppColors.waitingPart,
+          icon: Icons.schedule,
+        );
+      default:
+        return (
+          label: status.toUpperCase(),
+          color: AppColors.disabled,
+          icon: Icons.help,
+        );
+    }
+  }
+
+  Widget _buildMonthSection(String monthKey, List<Penarikan> penarikanList) {
+    final isExpanded = _expandedMonths.contains(monthKey);
+    final count = penarikanList.length;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => _toggleMonthExpansion(monthKey),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withAlpha(25),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.calendar_month,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SelectableText(
+                          monthKey,
+                          style: AppTextStyles.headlineSmall.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        SelectableText(
+                          '$count penarikan',
+                          style: AppTextStyles.bodyMedium,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: AppColors.primary,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isExpanded) ...[
+            const Divider(height: 1),
+            ...penarikanList.map((p) => _buildPenarikanCard(p)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPenarikanCard(Penarikan p) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: Colors.grey.shade200, width: 1)),
+      ),
+      child: InkWell(
+        onTap: () => _navigateToDetail(p),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: AppColors.secondary.withAlpha(25),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(
+                  Icons.local_shipping,
+                  color: AppColors.secondary,
+                  size: 20,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SelectableText(
+                      p.serialNumber?.isNotEmpty == true
+                          ? p.serialNumber!
+                          : (p.customer?.isNotEmpty == true
+                                ? p.customer!
+                                : '-'),
+                      style: AppTextStyles.bodyLarge.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    SelectableText(
+                      p.customer ?? '-',
+                      style: AppTextStyles.bodyMedium,
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.person,
+                          size: 12,
+                          color: AppColors.disabled,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: SelectableText(
+                            p.pic ?? '-',
+                            style: AppTextStyles.caption,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        _buildStatusBadge(p.statusUnit),
+                        const Spacer(),
+                        SelectableText(
+                          _formatDate(p.date ?? p.createdAt),
+                          style: AppTextStyles.caption,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.arrow_forward_ios,
+                size: 16,
+                color: AppColors.primary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return '-';
+    try {
+      final date = DateTime.parse(dateString);
+      return '${date.day}/${date.month}/${date.year}';
+    } catch (e) {
+      return dateString;
+    }
+  }
+
+  void _navigateToDetail(Penarikan penarikan) async {
+    final currentExpandedMonths = Set<String>.from(_expandedMonths);
+    final index = _filteredPenarikan.indexOf(penarikan);
+    final initialIndex = index >= 0 ? index : 0;
+
+    final changed = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PenarikanDetailScreen(
+          // Kirim SELURUH LIST
+          penarikanList: _filteredPenarikan,
+          // Kirim INDEX ITEM yang diklik
+          initialIndex: initialIndex,
+          user: widget.user,
+        ),
+      ),
+    );
+
+    if (mounted) {
+      setState(() {
+        _expandedMonths = currentExpandedMonths;
+      });
+    }
+
+    if (changed == true) {
+      _loadPenarikan();
+    }
+  }
+
+  void _navigateToCreate() async {
+    final currentExpandedMonths = Set<String>.from(_expandedMonths);
+
+    final created = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => PenarikanForm(user: widget.user)),
+    );
+
+    if (mounted) {
+      setState(() {
+        _expandedMonths = currentExpandedMonths;
+      });
+    }
+
+    if (created == true) {
+      _loadPenarikan();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: _buildAppBar(),
+      body: _buildBody(),
+      // UPDATE: Menggunakan Column untuk FAB agar bisa multi-button (Export & Add)
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        children: [
+          // Tombol Export (Hanya untuk Role Tertentu)
+          if (_canExport) ...[
+            FloatingActionButton(
+              heroTag: 'export_btn',
+              onPressed: _exportToExcel,
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              tooltip: 'Export Excel',
+              child: const Icon(Icons.file_download),
+            ),
+            const SizedBox(height: 16),
+          ],
+          // Tombol Create (Jika user bisa create job)
+          if (widget.user.canCreateJob)
+            FloatingActionButton(
+              heroTag: 'create_btn',
+              onPressed: _navigateToCreate,
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              child: const Icon(Icons.add),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            SelectableText(
+              'Memuat data penarikan...',
+              style: AppTextStyles.bodyMedium,
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 64, color: AppColors.error),
+            const SizedBox(height: 16),
+            SelectableText('Error: $_error', style: AppTextStyles.bodyMedium),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loadPenarikan,
+              child: const Text('Coba Lagi'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_filteredPenarikan.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(
+              Icons.local_shipping,
+              size: 64,
+              color: AppColors.disabled,
+            ),
+            const SizedBox(height: 16),
+            SelectableText(
+              _searchQuery.isEmpty
+                  ? 'Tidak ada data penarikan'
+                  : 'Tidak ada hasil pencarian',
+              style: AppTextStyles.bodyLarge,
+            ),
+            if (_searchQuery.isEmpty && widget.user.canCreateJob) ...[
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _navigateToCreate,
+                child: const Text('Tambah Penarikan Pertama'),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: () async => _loadPenarikan(),
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        itemCount: _groupedPenarikan.length,
+        itemBuilder: (context, index) {
+          final monthKey = _groupedPenarikan.keys.elementAt(index);
+          final penarikanList = _groupedPenarikan[monthKey]!;
+          return _buildMonthSection(monthKey, penarikanList);
+        },
+      ),
+    );
+  }
+}

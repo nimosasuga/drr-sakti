@@ -1,0 +1,478 @@
+import 'package:flutter/material.dart';
+import '../../models/user.dart';
+import '../../models/delivery.dart';
+import '../delivery/delivery_form.dart';
+
+class DeliveryDetailScreen extends StatefulWidget {
+  final DeliveryUnit delivery;
+  final User user;
+
+  const DeliveryDetailScreen({
+    Key? key,
+    required this.delivery,
+    required this.user,
+  }) : super(key: key);
+
+  @override
+  State<DeliveryDetailScreen> createState() => _DeliveryDetailScreenState();
+}
+
+class _DeliveryDetailScreenState extends State<DeliveryDetailScreen> {
+  late ScrollController _scrollController;
+  bool _showAppBarTitle = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+    _scrollController.addListener(_onScroll);
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _onScroll() {
+    if (_scrollController.offset > 100) {
+      if (!_showAppBarTitle) {
+        setState(() => _showAppBarTitle = true);
+      }
+    } else {
+      if (_showAppBarTitle) {
+        setState(() => _showAppBarTitle = false);
+      }
+    }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  Color _getStatusColor(String? status) {
+    switch (status?.toUpperCase()) {
+      case 'RFU':
+        return Colors.green;
+      case 'NOT RFU':
+        return Colors.red;
+      case 'PENDING':
+        return Colors.orange;
+      default:
+        return Colors.grey;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: CustomScrollView(
+        controller: _scrollController,
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 150,
+            pinned: true,
+            backgroundColor: Colors.purple,
+            title: _showAppBarTitle
+                ? Text(
+                    'Delivery #${widget.delivery.id}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  )
+                : null,
+            flexibleSpace: FlexibleSpaceBar(
+              title: _showAppBarTitle
+                  ? null
+                  : Column(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.delivery.serialNumber ?? 'No Serial',
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          'Delivery ID: ${widget.delivery.id}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
+                      ],
+                    ),
+              collapseMode: CollapseMode.parallax,
+            ),
+          ),
+          SliverToBoxAdapter(
+            child: SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(16.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Status Card
+                    Card(
+                      color: _getStatusColor(
+                        widget.delivery.statusUnit,
+                      ).withOpacity(0.1),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 60,
+                              height: 60,
+                              decoration: BoxDecoration(
+                                color: _getStatusColor(
+                                  widget.delivery.statusUnit,
+                                ),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                widget.delivery.statusUnit == 'RFU'
+                                    ? Icons.check_circle
+                                    : Icons.warning,
+                                color: Colors.white,
+                                size: 32,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    widget.delivery.statusUnit ?? 'Unknown',
+                                    style: TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                      color: _getStatusColor(
+                                        widget.delivery.statusUnit,
+                                      ),
+                                    ),
+                                  ),
+                                  Text(
+                                    'Status Unit',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.grey[600],
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Unit Information
+                    _buildSectionTitle('Unit Information'),
+                    _buildInfoCard([
+                      _buildInfoRow(
+                        'Serial Number',
+                        widget.delivery.serialNumber,
+                      ),
+                      _buildInfoRow('Unit Type', widget.delivery.unitType),
+                      _buildInfoRow('Year', widget.delivery.year?.toString()),
+                      _buildInfoRow(
+                        'Hour Meter',
+                        widget.delivery.hourMeter?.toString(),
+                      ),
+                    ]),
+
+                    const SizedBox(height: 20),
+
+                    // Customer & Location
+                    _buildSectionTitle('Customer & Location'),
+                    _buildInfoCard([
+                      _buildInfoRow('Customer', widget.delivery.customer),
+                      _buildInfoRow('Location', widget.delivery.location),
+                      _buildInfoRow('Branch', widget.delivery.branch),
+                    ]),
+
+                    const SizedBox(height: 20),
+
+                    // Delivery Details
+                    _buildSectionTitle('Delivery Details'),
+                    _buildInfoCard([
+                      _buildInfoRow(
+                        'Delivery Date',
+                        widget.delivery.date.toString().split(' ')[0],
+                      ),
+                      _buildInfoRow('PIC', widget.delivery.pic),
+                      _buildInfoRow('Partner', widget.delivery.partner),
+                      _buildInfoRow('In Time', widget.delivery.inTime),
+                      _buildInfoRow('Out Time', widget.delivery.outTime),
+                    ]),
+
+                    const SizedBox(height: 20),
+
+                    // Vehicle Information
+                    _buildSectionTitle('Vehicle Information'),
+                    _buildInfoCard([
+                      _buildInfoRow('Vehicle', widget.delivery.vehicle),
+                      _buildInfoRow('Nomor Polisi', widget.delivery.nopol),
+                      _buildInfoRow(
+                        'Status Mekanik',
+                        widget.delivery.statusMekanik,
+                      ),
+                    ]),
+
+                    const SizedBox(height: 20),
+
+                    // Battery & Charger Information
+                    if (widget.delivery.batteryType != null ||
+                        widget.delivery.chargerType != null) ...[
+                      _buildSectionTitle('Battery & Charger'),
+                      _buildInfoCard([
+                        if (widget.delivery.batteryType != null)
+                          _buildInfoRow(
+                            'Battery Type',
+                            widget.delivery.batteryType,
+                          ),
+                        if (widget.delivery.batterySn != null)
+                          _buildInfoRow(
+                            'Battery SN',
+                            widget.delivery.batterySn,
+                          ),
+                        if (widget.delivery.chargerType != null)
+                          _buildInfoRow(
+                            'Charger Type',
+                            widget.delivery.chargerType,
+                          ),
+                        if (widget.delivery.chargerSn != null)
+                          _buildInfoRow(
+                            'Charger SN',
+                            widget.delivery.chargerSn,
+                          ),
+                        if (widget.delivery.trolly != null)
+                          _buildInfoRow('Trolly', widget.delivery.trolly),
+                      ]),
+                      const SizedBox(height: 20),
+                    ],
+
+                    // Job Type
+                    if (widget.delivery.jobType != null &&
+                        widget.delivery.jobType!.isNotEmpty) ...[
+                      _buildSectionTitle('Job Type'),
+                      Wrap(
+                        spacing: 8,
+                        children: widget.delivery.jobType!
+                            .map(
+                              (job) => Chip(
+                                label: Text(job),
+                                backgroundColor: Colors.purple[100],
+                                labelStyle: const TextStyle(
+                                  color: Colors.purple,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+
+                    // Notes
+                    if (widget.delivery.note != null &&
+                        widget.delivery.note!.isNotEmpty) ...[
+                      _buildSectionTitle('Notes'),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey[300]!),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          widget.delivery.note!,
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                    ],
+
+                    // Timestamps
+                    _buildSectionTitle('Metadata'),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Colors.grey[100],
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _buildSmallInfoRow(
+                            'Created At',
+                            widget.delivery.createdAt?.toString() ?? '-',
+                          ),
+                          const SizedBox(height: 8),
+                          _buildSmallInfoRow(
+                            'Updated At',
+                            widget.delivery.updatedAt?.toString() ?? '-',
+                          ),
+                        ],
+                      ),
+                    ),
+
+                    const SizedBox(height: 32),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+      bottomNavigationBar: Padding(
+        padding: EdgeInsets.only(
+          left: 16,
+          right: 16,
+          top: 16,
+          bottom: MediaQuery.of(context).padding.bottom + 16,
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: () {
+                  Navigator.pop(context, false);
+                },
+                icon: const Icon(Icons.arrow_back),
+                label: const Text('Back'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey[400],
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ElevatedButton.icon(
+                onPressed: () async {
+                  final result = await Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => DeliveryForm(
+                        user: widget.user,
+                        delivery: widget.delivery,
+                      ),
+                    ),
+                  );
+                  if (result == true) {
+                    Navigator.pop(context, true);
+                  }
+                },
+                icon: const Icon(Icons.edit),
+                label: const Text('Edit'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.purple,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSectionTitle(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text(
+        title,
+        style: const TextStyle(
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+          color: Colors.black87,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoCard(List<Widget> children) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: children
+              .map(
+                (child) => Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: child,
+                ),
+              )
+              .toList(),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(String label, String? value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 13,
+            color: Colors.grey[600],
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        Flexible(
+          child: Text(
+            value ?? '-',
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: Colors.black87,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSmallInfoRow(String label, String value) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(label, style: TextStyle(fontSize: 12, color: Colors.grey[700])),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+              color: Colors.black87,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}

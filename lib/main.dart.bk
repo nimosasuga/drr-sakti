@@ -1,0 +1,52 @@
+import 'package:flutter/foundation.dart'; // Untuk akses kIsWeb
+import 'dart:developer';
+import 'package:flutter/material.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+import 'screens/login_screen.dart';
+
+void main() async {
+  // Enable logging in release mode
+  debugPrint = (String? message, {int? wrapWidth}) {
+    if (message != null) {
+      log('DRR_APP: $message');
+    }
+  };
+
+  // FIX: Initialize bindings FIRST
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize AdMob (Hanya jika BUKAN Web)
+  // Kita gunakan !kIsWeb (artinya: jika tidak web)
+  if (!kIsWeb) {
+    try {
+      await MobileAds.instance.initialize();
+      log('AdMob initialized successfully');
+    } catch (e) {
+      log('AdMob initialization error on mobile: $e');
+    }
+  } else {
+    log('AdMob skipped: Running on Web');
+  }
+
+  // Run app (NO runZonedGuarded!)
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'DRR SAKTI',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+        visualDensity: VisualDensity.adaptivePlatformDensity,
+      ),
+      home: const LoginScreen(),
+      debugShowCheckedModeBanner: false,
+      routes: {'/login': (context) => const LoginScreen()},
+    );
+  }
+}

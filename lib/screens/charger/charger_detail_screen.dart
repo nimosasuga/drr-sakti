@@ -1,0 +1,940 @@
+// lib/screens/charger/charger_detail_screen.dart
+import 'package:flutter/material.dart';
+import 'dart:developer' as developer;
+import 'package:intl/intl.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../../models/charger.dart';
+import '../../models/user.dart';
+import '../../services/api_service.dart';
+import '../../constants/colors.dart';
+import 'charger_form.dart';
+
+class ChargerDetailScreen extends StatefulWidget {
+  final Charger charger;
+  final User user;
+
+  const ChargerDetailScreen({
+    super.key,
+    required this.charger,
+    required this.user,
+  });
+
+  @override
+  State<ChargerDetailScreen> createState() => _ChargerDetailScreenState();
+}
+
+class _ChargerDetailScreenState extends State<ChargerDetailScreen> {
+  final ApiService api = ApiService();
+  late Charger _charger;
+  bool _loading = false;
+  bool _dataLoaded = false;
+
+  // ===== PERMISSION CHECKS =====
+  bool get _canEdit {
+    return _charger.pic == widget.user.name || widget.user.isSuperAdmin;
+  }
+
+  bool get _canDelete {
+    final status = widget.user.statusUser.toUpperCase();
+    return status.contains('ADMIN') || status.contains('KOORDINATOR');
+  }
+
+  String get _editDisabledReason {
+    if (_canEdit) return '';
+    return 'Hanya PIC "${_charger.pic}" yang bisa edit record ini';
+  }
+
+  String get _deleteDisabledReason {
+    if (_canDelete) return '';
+    return 'Hanya ADMIN dan KOORDINATOR yang bisa delete record ini';
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _charger = widget.charger;
+
+    if (_charger.id != null) {
+      _dataLoaded = true;
+      _loadDetail();
+    }
+  }
+
+  String _fmtDate(String? iso) {
+    if (iso == null || iso.isEmpty) return '-';
+    try {
+      final d = DateTime.parse(iso);
+      return DateFormat('dd MMM yyyy').format(d);
+    } catch (_) {
+      return iso;
+    }
+  }
+
+  Widget _infoRow(String label, String? value, {bool multiline = false}) {
+    final val = (value == null || value.isEmpty) ? '-' : value;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6.0),
+      child: Row(
+        crossAxisAlignment: multiline
+            ? CrossAxisAlignment.start
+            : CrossAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 140,
+            child: Text(
+              label,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+          ),
+          Expanded(child: SelectableText(val, maxLines: multiline ? 5 : 1)),
+        ],
+      ),
+    );
+  }
+
+  Widget _statusBadge(String s) {
+    final st = s.toUpperCase();
+    Color color = Colors.grey;
+    if (st.contains('RFU') || st.contains('READY')) {
+      color = Colors.green;
+    } else if (st.contains('BROKEN') || st.contains('BREAK')) {
+      color = Colors.red;
+    } else if (st.contains('MONITOR')) {
+      color = Colors.orange;
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: color.withAlpha(50),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Text(
+        st,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.bold,
+          fontSize: 12,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _loadDetail() async {
+    setState(() => _loading = true);
+
+    try {
+      final detail = await api.fetchOneCharger(_charger.id ?? 0);
+      if (mounted) {
+        if (detail != null) {
+          setState(() {
+            _charger = detail;
+            _dataLoaded = true;
+          });
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Detail charger tidak ditemukan.'),
+              backgroundColor: AppColors.error,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal memuat detail: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      developer.log('Error loading detail: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  Future<void> _deleteCharger() async {
+    if (!_canDelete) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_deleteDisabledReason),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Hapus Charger?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Aksi ini tidak bisa dibatalkan.'),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.withAlpha(30),
+                borderRadius: BorderRadius.circular(4),
+              ),
+              child: Text(
+                'Record ID: ${_charger.id}',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.orange.withAlpha(230),
+                ),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Batal'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Hapus', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      final res = await api.deleteCharger(_charger.id ?? 0);
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      if (res['ok'] == true) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Charger berhasil dihapus'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context, true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal: ${res['message']}'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      developer.log('Delete error: $e');
+    }
+  }
+
+  Future<void> _editCharger() async {
+    if (!_canEdit) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(_editDisabledReason),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    final updated = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => ChargerForm(charger: _charger, user: widget.user),
+      ),
+    );
+
+    if (updated == true) {
+      await _loadDetail();
+    }
+  }
+
+  // === HELPER JOB TYPE ===
+  String _formatJobType() {
+    final jobType = _charger.jobType;
+    if (jobType == null || jobType.isEmpty) return '-';
+    // Bersihkan format lama jika ada (brackets, quotes)
+    return jobType.replaceAll('[', '').replaceAll(']', '').replaceAll('"', '');
+  }
+
+  Color _getJobTypeColor(String jobType) {
+    final lower = jobType.toLowerCase();
+    if (lower.contains('troubleshooting')) return Colors.orange;
+    if (lower.contains('install')) return Colors.blue;
+    if (lower.contains('repair')) return Colors.green;
+    return Colors.grey;
+  }
+
+  // === WIDGET CHIPS WARNA ===
+  Widget _buildJobTypeChips(String jobTypeString) {
+    if (jobTypeString.isEmpty || jobTypeString == '-') {
+      return const Text('-');
+    }
+
+    final jobTypes = jobTypeString.split(',').map((e) => e.trim()).toList();
+
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: jobTypes.map((jobType) {
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: _getJobTypeColor(jobType),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text(
+            jobType,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  // === WA FORMAT ===
+  String _formatWhatsAppMessage(Charger c) {
+    final c = _charger;
+
+    String formatDate(String? dateString) {
+      if (dateString == null || dateString.isEmpty) return '-';
+      try {
+        final date = DateTime.parse(dateString);
+        final days = [
+          'Senin',
+          'Selasa',
+          'Rabu',
+          'Kamis',
+          'Jumat',
+          'Sabtu',
+          'Minggu',
+        ];
+        final months = [
+          'Januari',
+          'Februari',
+          'Maret',
+          'April',
+          'Mei',
+          'Juni',
+          'Juli',
+          'Agustus',
+          'September',
+          'Oktober',
+          'November',
+          'Desember',
+        ];
+        final dayName = days[date.weekday - 1];
+        return '$dayName, ${date.day} ${months[date.month - 1]} ${date.year}';
+      } catch (e) {
+        return dateString;
+      }
+    }
+
+    String formatTime(String? timeString) =>
+        (timeString == null || timeString.isEmpty) ? '-' : timeString;
+
+    String formatRecommendations() {
+      if (c.recommendations == null || c.recommendations!.isEmpty) {
+        return '*PART NUMBER :* -\n*PART NAME :* -\n*QTY :* -\n*REMARKS :* -';
+      }
+      final buffer = StringBuffer();
+      for (int i = 0; i < c.recommendations!.length; i++) {
+        final part = c.recommendations![i];
+        if (i > 0) buffer.write('\n');
+        buffer.write('*PART NUMBER :* ${part.partNumber ?? "-"}\n');
+        buffer.write('*PART NAME :* ${part.partName ?? "-"}\n');
+        buffer.write('*QTY :* ${part.qty ?? "-"}\n');
+        buffer.write('*REMARKS :* ${part.remarks ?? "-"}');
+      }
+      return buffer.toString();
+    }
+
+    String formatInstallParts() {
+      if (c.installParts == null || c.installParts!.isEmpty) {
+        return '*PART NUMBER :* -\n*PART NAME :* -\n*QTY :* -\n*NO JOB :* -\n*NO PR :* -\n*REMARKS :* -';
+      }
+
+      final buffer = StringBuffer();
+      for (int i = 0; i < c.installParts!.length; i++) {
+        final part = c.installParts![i];
+        if (i > 0) buffer.write('\n');
+        buffer.write('*PART NUMBER :* ${part.partNumber ?? "-"}\n');
+        buffer.write('*PART NAME :* ${part.partName ?? "-"}\n');
+        buffer.write('*QTY :* ${part.qty ?? "-"}\n');
+        buffer.write('*NO JOB :* ${part.noJob ?? "-"}');
+        buffer.write('\n*NO PR :* ${part.noPr ?? "-"}');
+        buffer.write('\n*REMARKS :* ${part.remarks ?? "-"}');
+      }
+      return buffer.toString();
+    }
+
+    final jobType = _formatJobType();
+
+    final message =
+        '''
+⚡ *UPDATE JOB RENTAL* _${c.statusMekanik ?? '-'}_
+${c.categoryJob ?? '-'}
+
+*${c.customer?.toUpperCase() ?? 'CUSTOMER'}*
+*LOCATION :* ${c.location?.toUpperCase() ?? '-'}
+*DATE :* ${formatDate(c.date)}
+*IN :* ${formatTime(c.inTime)}
+*OUT :* ${formatTime(c.outTime)}
+*MAN POWER :* ${c.pic ?? '-'} - ${c.partner ?? '-'}
+*KENDARAAN :* ${c.vehicle ?? '-'} - ${c.nopol ?? '-'}
+
+> _*DETAIL UNIT*_
+*UNIT TYPE :* ${c.unitType ?? '-'}
+*SN UNIT :* ${c.serialNumber ?? '-'}
+
+> _*DETAIL CHARGER*_
+*CHARGER SN :* ${c.snCharger ?? '-'}
+*TYPE :* ${c.chargerType ?? '-'}
+*YEAR :* ${c.chargerYear?.toString() ?? '-'}
+
+> _*JOB DESCRIPTIONS*_
+*CATEGORY :* ${c.categoryJob ?? '-'}
+*JOB TYPE :* $jobType
+*STATUS :* ${c.statusUnit ?? '-'}
+*PROBLEM DATE :* ${formatDate(c.problemDate)}
+*RFU DATE :* ${formatDate(c.rfuDate)}
+*PROBLEM :* ${c.problem ?? '-'}
+*ACTION :* ${c.action ?? '-'}
+
+> _*RECOMMENDATIONS*_
+${formatRecommendations()}
+
+> _*INSTALL PART*_
+${formatInstallParts()}
+''';
+
+    return message;
+  }
+
+Future<void> _shareToWhatsApp() async {
+    final msg = _formatWhatsAppMessage(_charger);
+
+    // Gunakan URL Scheme 'whatsapp://send?text=...'
+    // Ini memaksa membuka aplikasi WA dan menaruh teks di input field
+    final whatsappUrl = Uri.parse(
+      "whatsapp://send?text=${Uri.encodeComponent(msg)}",
+    );
+
+    try {
+      // Cek apakah bisa membuka URL (WhatsApp terinstall)
+      // Gunakan LaunchMode.externalApplication agar keluar dari aplikasi kita ke WA
+      if (!await launchUrl(whatsappUrl, mode: LaunchMode.externalApplication)) {
+        throw 'Could not launch WhatsApp';
+      }
+    } catch (e) {
+      developer.log('WhatsApp Launch error: $e');
+
+      // FALLBACK: Jika WhatsApp tidak terinstall atau error,
+      // gunakan Share Sheet biasa sebagai cadangan
+
+      // 🚀 PERBAIKAN: Menggunakan SharePlus.instance.share() dengan ShareParams
+      await SharePlus.instance.share(ShareParams(text: msg));
+
+      if (mounted) {
+        // Opsional: Beritahu user jika fallback terjadi
+        // _showSnack('Membuka menu share standar...');
+      }
+    }
+  }
+
+  // === CARD BUILDERS ===
+
+  Widget _buildHeaderCard() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SelectableText(
+              _charger.categoryJob ?? 'Charger',
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              _charger.customer ?? '-',
+              style: const TextStyle(fontSize: 14, color: Colors.black54),
+            ),
+            const SizedBox(height: 10),
+            if (_charger.statusUnit?.isNotEmpty == true)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: _statusBadge(_charger.statusUnit!),
+              ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.person, size: 16, color: Colors.grey),
+                  const SizedBox(width: 8),
+                  SelectableText(
+                    'PIC: ${_charger.pic ?? '-'}',
+                    style: const TextStyle(fontSize: 12, color: Colors.grey),
+                  ),
+                  const Spacer(),
+                  if (_canEdit)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.green.shade100,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const SelectableText(
+                        'Dapat Edit',
+                        style: TextStyle(fontSize: 10, color: Colors.green),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChargerInfoCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Informasi Unit & Charger',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.bold,
+                color: Colors.blue,
+              ),
+            ),
+            const SizedBox(height: 12),
+            _infoRow('Customer', _charger.customer),
+            _infoRow('Location', _charger.location),
+            _infoRow('Unit Type', _charger.unitType),
+            _infoRow('Unit SN', _charger.serialNumber),
+            const Divider(),
+            _infoRow('Charger SN', _charger.snCharger),
+            _infoRow('Charger Type', _charger.chargerType),
+            _infoRow('Charger Year', _charger.chargerYear?.toString()),
+            const Divider(),
+            _infoRow('ID', _charger.id?.toString()),
+            _infoRow('Branch', _charger.branch),
+            _infoRow('Date', _fmtDate(_charger.date)),
+            _infoRow('Vehicle', _charger.vehicle),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // 🔥 UPDATE: Menggunakan Chips untuk Job Type
+  Widget _buildJobStatusCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Status & Job Details',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6.0),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(
+                    width: 140,
+                    child: Text(
+                      'Job Type',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  Expanded(child: _buildJobTypeChips(_formatJobType())),
+                ],
+              ),
+            ),
+
+            _infoRow('Status Unit', _charger.statusUnit),
+            _infoRow('Problem Date', _fmtDate(_charger.problemDate)),
+            _infoRow('RFU Date', _fmtDate(_charger.rfuDate)),
+            const Divider(),
+            _infoRow('Problem', _charger.problem, multiline: true),
+            _infoRow('Action', _charger.action, multiline: true),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildRecommendationsCard() {
+    if (_charger.recommendations == null || _charger.recommendations!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Recommendations',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _charger.recommendations!.length,
+              separatorBuilder: (_, _) => const Divider(),
+              itemBuilder: (context, index) {
+                final item = _charger.recommendations![index];
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.check_circle,
+                          color: Colors.green,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${item.partNumber ?? '-'} - ${item.partName ?? '-'}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Qty: ${item.qty ?? 0}',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    if (item.remarks?.isNotEmpty == true) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Remarks: ${item.remarks}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildInstallPartsCard() {
+    if (_charger.installParts == null || _charger.installParts!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Install Parts',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _charger.installParts!.length,
+              separatorBuilder: (_, _) => const Divider(),
+              itemBuilder: (context, index) {
+                final item = _charger.installParts![index];
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.build, color: Colors.blue, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '${item.partNumber ?? '-'} - ${item.partName ?? '-'}',
+                            style: const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Qty: ${item.qty ?? 0}',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    if (item.noJob?.isNotEmpty == true)
+                      Text(
+                        'No Job: ${item.noJob}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    if (item.noPr?.isNotEmpty == true)
+                      Text(
+                        'No PR: ${item.noPr}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                    if (item.remarks?.isNotEmpty == true)
+                      Text(
+                        'Remarks: ${item.remarks}',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey,
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMetaCard() {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Metadata',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            const Divider(),
+            _infoRow('Created At', _charger.createdAt),
+            _infoRow('Updated At', _charger.updatedAt),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPermissionWarning() {
+    if (_canEdit && _canDelete) return const SizedBox.shrink();
+
+    return Container(
+      margin: const EdgeInsets.all(16),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.orange.withAlpha(25),
+        border: Border.all(color: Colors.orange.withAlpha(50)),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info, color: Colors.orange.withAlpha(180), size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Permission Limitation',
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: Colors.orange.withAlpha(230),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (!_canEdit)
+            Text(
+              '• Edit: $_editDisabledReason',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.orange.withAlpha(200),
+              ),
+            ),
+          if (!_canDelete)
+            Text(
+              '• Delete: $_deleteDisabledReason',
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.orange.withAlpha(200),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: true,
+      onPopInvokedWithResult: (didPop, result) {},
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Detail Charger'),
+          backgroundColor: AppColors.primary,
+          foregroundColor: Colors.white,
+          elevation: 2,
+          actions: [
+            if (_canEdit)
+              Tooltip(
+                message: 'Edit',
+                child: IconButton(
+                  onPressed: _editCharger,
+                  icon: const Icon(Icons.edit),
+                ),
+              )
+            else
+              Tooltip(
+                message: _editDisabledReason,
+                child: IconButton(
+                  onPressed: null,
+                  icon: Icon(Icons.edit, color: Colors.grey.withAlpha(76)),
+                ),
+              ),
+            IconButton(
+              onPressed: _loadDetail,
+              icon: const Icon(Icons.refresh),
+              tooltip: 'Refresh Detail',
+            ),
+            if (_canDelete)
+              Tooltip(
+                message: 'Delete',
+                child: IconButton(
+                  onPressed: _deleteCharger,
+                  icon: const Icon(Icons.delete),
+                ),
+              )
+            else
+              Tooltip(
+                message: _deleteDisabledReason,
+                child: IconButton(
+                  onPressed: null,
+                  icon: Icon(Icons.delete, color: Colors.grey.withAlpha(76)),
+                ),
+              ),
+          ],
+        ),
+        body: _loading
+            ? const Center(child: CircularProgressIndicator())
+            : SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (!_canEdit || !_canDelete) _buildPermissionWarning(),
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildHeaderCard(),
+                          const SizedBox(height: 16),
+                          _buildChargerInfoCard(),
+                          const SizedBox(height: 16),
+                          _buildJobStatusCard(),
+                          const SizedBox(height: 16),
+                          _buildRecommendationsCard(),
+                          if (_charger.recommendations?.isNotEmpty == true)
+                            const SizedBox(height: 16),
+                          _buildInstallPartsCard(),
+                          if (_charger.installParts?.isNotEmpty == true)
+                            const SizedBox(height: 16),
+                          _buildMetaCard(),
+                          const SizedBox(height: 24),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+        floatingActionButton: _dataLoaded && _charger.id != null
+            ? FloatingActionButton(
+                onPressed: _shareToWhatsApp,
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                child: const Icon(Icons.share),
+              )
+            : null,
+      ),
+    );
+  }
+}

@@ -1,0 +1,1573 @@
+// lib/screens/battery/battery_form.dart
+import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'dart:developer' as developer;
+import '../../models/battery.dart';
+import '../../models/user.dart';
+import '../../services/api_service.dart';
+import '../../constants/colors.dart';
+
+class BatteryForm extends StatefulWidget {
+  final Battery? battery;
+  final User user;
+
+  const BatteryForm({super.key, this.battery, required this.user});
+
+  @override
+  State<BatteryForm> createState() => _BatteryFormState();
+}
+
+class _BatteryFormState extends State<BatteryForm> {
+  final _formKey = GlobalKey<FormState>();
+  final ApiService api = ApiService();
+
+  bool _hasUnsavedChanges = false;
+
+  // ===== CONTROLLERS =====
+
+  // 1. Teknisi
+  late TextEditingController branchCtrl;
+  late TextEditingController statusMekanikCtrl;
+  late TextEditingController picCtrl;
+  late TextEditingController partnerCtrl;
+
+  // 2. Waktu & Kendaraan
+  TimeOfDay? inTime;
+  TimeOfDay? outTime;
+  late TextEditingController vehicleCtrl;
+  late TextEditingController nopolCtrl;
+  DateTime? date;
+  late TextEditingController dateCtrl;
+
+  // 3. Unit Info (CASCADE LOGIC)
+  late TextEditingController customerCtrl;
+  late TextEditingController locationCtrl;
+  late TextEditingController unitTypeCtrl; // NEW: Unit Type
+  late TextEditingController unitSerialCtrl; // NEW: Unit Serial Number
+
+  // 4. Battery Info (RENAMED)
+  late TextEditingController snBatteryCtrl; // Battery SN (ex: serialCtrl)
+  late TextEditingController batteryTypeCtrl;
+  late TextEditingController batteryYearCtrl; // Battery Year (ex: yearCtrl)
+
+  // 5. Job & Status
+  List<String> selectedJobTypes = [];
+  String categoryJobVal = '';
+  String statusUnitVal = 'RFU';
+
+  late TextEditingController problemDateCtrl;
+  DateTime? problemDate;
+  late TextEditingController rfuDateCtrl;
+  DateTime? rfuDate;
+
+  late TextEditingController problemCtrl;
+  late TextEditingController actionCtrl;
+
+  List<PartItem> recommendations = [];
+  List<PartItem> installParts = [];
+
+  // ===== DATA SOURCES =====
+  List<String> customerList = [];
+  List<String> locationList = [];
+  List<String> partnerList = [];
+
+  // Unit Selection Logic Variables
+  List<Map<String, dynamic>> _allUnitsAtLocation =
+      []; // Menyimpan raw data unit
+  List<String> _availableUnitTypes = []; // List unik type unit
+  List<String> _availableSerialNumbers =
+      []; // List SN berdasarkan Type terpilih
+
+  // Loading States
+  bool loadingCustomers = false;
+  bool loadingLocations = false;
+  bool loadingPartners = false;
+  bool loadingUnits = false;
+
+  final List<String> availableJobTypes = [
+    'Troubleshooting',
+    'Install part',
+    'Repair',
+    'Peremajaan',
+  ];
+
+  final List<String> availableCategoryJobs = [
+    'TARIK BATTERY',
+    'CEK BATTERY',
+    'KIRIM BATTERY',
+  ];
+
+  // Template Action untuk Peremajaan
+  static const String _rejuvenationActionTemplate = '''
+VOLTAGE TOTAL :
+PLUS TO BODY :
+MINUS TO BODY :
+CELL NOMINAL :
+CELL DAMAGED :
+PLUG / SOCKET :
+BATTERYCELL :
+CABLE CONDITION :
+INTER CELL CONNECTOR :
+CELL BOLT :
+BATTERY TRAY :
+''';
+
+  final Color primaryColor = const Color(0xFF2C5AA0);
+  final Color backgroundColor = const Color(0xFFF8F9FA);
+  final Color borderColor = const Color(0xFFE0E0E0);
+  final Color textColor = const Color(0xFF333333);
+  final Color disabledColor = const Color(0xFFF5F5F5);
+
+  @override
+  void initState() {
+    super.initState();
+    final b = widget.battery;
+    _initializeControllers(b);
+    _hasUnsavedChanges = widget.battery == null;
+
+    _loadPartners();
+    _loadCustomers();
+  }
+
+  void _initializeControllers(Battery? b) {
+    branchCtrl = TextEditingController(text: widget.user.branch);
+    statusMekanikCtrl = TextEditingController(
+      text: _getStatusMekanikFromUserStatus(widget.user.statusUser),
+    );
+    picCtrl = TextEditingController(text: widget.user.name);
+    partnerCtrl = TextEditingController(text: b?.partner ?? '');
+    inTime = _parseTime(b?.inTime);
+    outTime = _parseTime(b?.outTime);
+    vehicleCtrl = TextEditingController(text: b?.vehicle ?? '');
+    nopolCtrl = TextEditingController(text: b?.nopol ?? '');
+    date = _parseDate(b?.date);
+    dateCtrl = TextEditingController(text: _fmtDate(date));
+
+    // Mapping Unit Info
+    customerCtrl = TextEditingController(text: b?.customer ?? '');
+    locationCtrl = TextEditingController(text: b?.location ?? '');
+    unitTypeCtrl = TextEditingController(text: b?.unitType ?? '');
+    unitSerialCtrl = TextEditingController(
+      text: b?.serialNumber ?? '',
+    ); // Ini Unit SN
+
+    // Mapping Battery Info
+    snBatteryCtrl = TextEditingController(
+      text: b?.snBattery ?? '',
+    ); // Ini Battery SN
+    batteryTypeCtrl = TextEditingController(text: b?.batteryType ?? '');
+    batteryYearCtrl = TextEditingController(
+      text: b?.batteryYear?.toString() ?? '',
+    );
+
+    // Job Types Parsing
+    // PERBAIKAN: Job Types Parsing
+    if (b?.jobType != null && b!.jobType!.isNotEmpty) {
+      // Jika sudah comma-separated
+      if (b.jobType!.contains(',')) {
+        selectedJobTypes = b.jobType!
+            .split(',')
+            .map((e) => e.trim())
+            .where((e) => e.isNotEmpty)
+            .toList();
+      } else {
+        // Jika single value atau masih dalam format lain
+        final cleaned = b.jobType!
+            .replaceAll('[', '')
+            .replaceAll(']', '')
+            .replaceAll('"', '')
+            .trim();
+
+        if (cleaned.isNotEmpty) {
+          selectedJobTypes = [cleaned];
+        } else {
+          selectedJobTypes = [];
+        }
+      }
+    } else {
+      selectedJobTypes = [];
+    }
+
+    final String? initialCategoryJob = b?.categoryJob;
+    categoryJobVal =
+        initialCategoryJob != null &&
+            availableCategoryJobs.contains(initialCategoryJob)
+        ? initialCategoryJob
+        : availableCategoryJobs.first;
+
+    statusUnitVal = b?.statusUnit ?? 'RFU';
+
+    problemDate = _parseDate(b?.problemDate);
+    problemDateCtrl = TextEditingController(text: _fmtDate(problemDate));
+    rfuDate = _parseDate(b?.rfuDate);
+    rfuDateCtrl = TextEditingController(text: _fmtDate(rfuDate));
+
+    problemCtrl = TextEditingController(text: b?.problem ?? '');
+    actionCtrl = TextEditingController(text: b?.action ?? '');
+
+    recommendations = List<PartItem>.from(b?.recommendations ?? []);
+    installParts = List<PartItem>.from(b?.installParts ?? []);
+
+    // PRELOAD DATA JIKA EDIT
+    if (b != null && b.customer != null && b.location != null) {
+      _preloadDataForEdit(b.customer!, b.location!);
+    }
+
+    _addChangeListeners();
+  }
+
+  Future<void> _preloadDataForEdit(String cust, String loc) async {
+    // Load locations untuk dropdown location
+    try {
+      final locs = await api.getLocationsByCustomer(cust, widget.user.branch);
+      if (mounted) {
+        setState(() => locationList = locs);
+      }
+
+      // Load units agar dropdown Unit Type & Unit SN berfungsi
+      await _loadUnitsForLocation(cust, loc);
+    } catch (e) {
+      developer.log('Error preloading edit data: $e');
+    }
+  }
+
+  void _addChangeListeners() {
+    final controllers = [
+      partnerCtrl,
+      vehicleCtrl,
+      nopolCtrl,
+      dateCtrl,
+      unitSerialCtrl,
+      unitTypeCtrl,
+      snBatteryCtrl,
+      batteryTypeCtrl,
+      batteryYearCtrl,
+      problemDateCtrl,
+      rfuDateCtrl,
+      problemCtrl,
+      actionCtrl,
+    ];
+    for (final c in controllers) {
+      c.addListener(_onFormChanged);
+    }
+  }
+
+  void _onFormChanged() {
+    if (!_hasUnsavedChanges) {
+      setState(() => _hasUnsavedChanges = true);
+    }
+  }
+
+  String _getStatusMekanikFromUserStatus(String statusUser) {
+    final upper = statusUser.toUpperCase();
+    if (upper.contains('FIELD SERVICE')) return 'Field Service';
+    if (upper.contains('FMC')) return 'FMC';
+    return 'Field Service';
+  }
+
+  // ===== API & CASCADE LOGIC =====
+
+  Future<void> _loadPartners() async {
+    setState(() => loadingPartners = true);
+    try {
+      final partners = await api.fetchPartnersByBranch(
+        widget.user.branch,
+        currentUserName: widget.user.name,
+      );
+      if (mounted) {
+        setState(() => partnerList = partners);
+      }
+    } catch (e) {
+      developer.log('Error loading partners: $e');
+    } finally {
+      if (mounted) {
+        setState(() => loadingPartners = false);
+      }
+    }
+  }
+
+  Future<void> _loadCustomers() async {
+    setState(() => loadingCustomers = true);
+    try {
+      final customers = await api.getCustomersByBranch(widget.user.branch);
+      if (mounted) {
+        setState(() => customerList = customers);
+      }
+    } catch (e) {
+      developer.log('Error loading customers: $e');
+    } finally {
+      if (mounted) {
+        setState(() => loadingCustomers = false);
+      }
+    }
+  }
+
+  Future<void> _onCustomerChanged(String customer) async {
+    setState(() {
+      customerCtrl.text = customer;
+      // Reset downstream
+      locationCtrl.clear();
+      unitTypeCtrl.clear();
+      unitSerialCtrl.clear();
+      locationList = [];
+      _allUnitsAtLocation = [];
+      _availableUnitTypes = [];
+      _availableSerialNumbers = [];
+    });
+    _onFormChanged();
+
+    setState(() => loadingLocations = true);
+    try {
+      final locations = await api.getLocationsByCustomer(
+        customer,
+        widget.user.branch,
+      );
+      if (mounted) {
+        setState(() => locationList = locations);
+      }
+    } catch (e) {
+      developer.log('Error loading locations: $e');
+    } finally {
+      if (mounted) {
+        setState(() => loadingLocations = false);
+      }
+    }
+  }
+
+  Future<void> _onLocationChanged(String location) async {
+    setState(() {
+      locationCtrl.text = location;
+      // Reset downstream
+      unitTypeCtrl.clear();
+      unitSerialCtrl.clear();
+      _allUnitsAtLocation = [];
+      _availableUnitTypes = [];
+      _availableSerialNumbers = [];
+    });
+    _onFormChanged();
+
+    await _loadUnitsForLocation(customerCtrl.text, location);
+  }
+
+  Future<void> _loadUnitsForLocation(String customer, String location) async {
+    if (customer.isEmpty || location.isEmpty) return;
+    setState(() => loadingUnits = true);
+
+    try {
+      // Ambil semua unit di lokasi (via API unit_assets)
+      final units = await api.getUnitsByCustomerLocation(
+        customer,
+        location,
+        widget.user.branch,
+      );
+
+      if (mounted) {
+        setState(() {
+          _allUnitsAtLocation = units;
+          // Ambil Unit Type yang unik
+          _availableUnitTypes = units
+              .map((u) => u['unit_type']?.toString() ?? '')
+              .where((t) => t.isNotEmpty)
+              .toSet()
+              .toList();
+          _availableUnitTypes.sort();
+        });
+      }
+    } catch (e) {
+      developer.log('Error loading units: $e');
+    } finally {
+      if (mounted) {
+        setState(() => loadingUnits = false);
+      }
+    }
+  }
+
+  void _onUnitTypeChanged(String type) {
+    setState(() {
+      unitTypeCtrl.text = type;
+      unitSerialCtrl.clear();
+
+      // Filter Serial Number berdasarkan Unit Type yang dipilih
+      _availableSerialNumbers = _allUnitsAtLocation
+          .where((u) => u['unit_type'] == type)
+          .map((u) => u['serial_number']?.toString() ?? '')
+          .where((s) => s.isNotEmpty)
+          .toList();
+      _availableSerialNumbers.sort();
+    });
+    _onFormChanged();
+  }
+
+  void _onUnitSerialChanged(String serial) {
+    setState(() {
+      unitSerialCtrl.text = serial;
+    });
+    _onFormChanged();
+  }
+
+  // ===== UTILS =====
+
+  TimeOfDay? _parseTime(String? s) {
+    if (s == null || s.isEmpty) return null;
+    try {
+      final p = s.split(':');
+      return TimeOfDay(hour: int.parse(p[0]), minute: int.parse(p[1]));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  DateTime? _parseDate(String? s) {
+    if (s == null || s.isEmpty) return null;
+    try {
+      return DateTime.parse(s);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  String _fmtDate(DateTime? d) =>
+      d == null ? '' : DateFormat('yyyy-MM-dd').format(d);
+
+  String _fmtTime(TimeOfDay? t) => t == null ? '' : t.format(context);
+
+  InputDecoration _buildInputDecoration(
+    String label, {
+    bool isReadOnly = false,
+  }) {
+    return InputDecoration(
+      labelText: label,
+      labelStyle: TextStyle(color: textColor.withValues(alpha: 0.7)),
+      filled: true,
+      fillColor: isReadOnly ? disabledColor : Colors.white,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: borderColor),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: borderColor),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: BorderSide(color: primaryColor, width: 2),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+    );
+  }
+
+  Future<bool> _onWillPop() async {
+    if (!_hasUnsavedChanges) return true;
+    final shouldPop = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Unsaved Changes'),
+        content: const Text(
+          'You have unsaved changes. Are you sure you want to leave?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Leave'),
+          ),
+        ],
+      ),
+    );
+    return shouldPop ?? false;
+  }
+
+  Future<void> _pickDate(
+    BuildContext c,
+    DateTime? init,
+    Function(DateTime) onPicked,
+  ) async {
+    final picked = await showDatePicker(
+      context: c,
+      initialDate: init ?? DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      onPicked(picked);
+      _onFormChanged();
+    }
+  }
+
+  Future<void> _pickTime(
+    BuildContext c,
+    TimeOfDay? init,
+    Function(TimeOfDay) onPicked,
+  ) async {
+    final picked = await showTimePicker(
+      context: c,
+      initialTime: init ?? TimeOfDay.now(),
+    );
+    if (picked != null) {
+      onPicked(picked);
+      _onFormChanged();
+    }
+  }
+
+  void _showJobTypeSelection() {
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) {
+          return AlertDialog(
+            title: const Text('Pilih Job Type'),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: availableJobTypes.length,
+                itemBuilder: (context, index) {
+                  final jobType = availableJobTypes[index];
+                  return CheckboxListTile(
+                    title: Text(jobType),
+                    value: selectedJobTypes.contains(jobType),
+                    onChanged: (bool? value) {
+                      setDialogState(() {
+                        if (value == true) {
+                          selectedJobTypes.add(jobType);
+                        } else {
+                          selectedJobTypes.remove(jobType);
+                        }
+                      });
+                    },
+                  );
+                },
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Batal'),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  // PERBAIKAN: Panggil setState SEBELUM Navigator.pop()
+                  // Ini memastikan perubahan di simpan ke widget utama
+                  setState(() {
+                    bool isRejuvenationSelected = selectedJobTypes.contains(
+                      'Peremajaan',
+                    );
+                    const String template = _rejuvenationActionTemplate;
+
+                    if (isRejuvenationSelected) {
+                      final currentText = actionCtrl.text.trim();
+                      if (!currentText.contains('VOLTAGE TOTAL :')) {
+                        actionCtrl.text =
+                            (currentText.isEmpty ? '' : '$currentText\n\n') +
+                            template.trim();
+                      }
+                    } else {
+                      if (actionCtrl.text.contains('VOLTAGE TOTAL :')) {
+                        actionCtrl.text = actionCtrl.text
+                            .replaceAll(template.trim(), '')
+                            .trim();
+                      }
+                    }
+
+                    // Trigger perubahan form
+                    _onFormChanged();
+                  });
+
+                  Navigator.pop(context);
+                },
+                child: const Text('Simpan'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  // ===== SUBMIT LOGIC =====
+
+  Future<void> _submit() async {
+    if (!_formKey.currentState!.validate()) return;
+
+    if (customerCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Customer harus diisi')));
+      return;
+    }
+
+    // Validasi Unit Serial
+    if (unitSerialCtrl.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Serial Number Unit harus dipilih')),
+      );
+      return;
+    }
+
+    // PERBAIKAN: Validasi Job Type tidak boleh kosong
+    if (selectedJobTypes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Pilih minimal satu Job Type')),
+      );
+      return;
+    }
+
+    // PERBAIKAN: Format jobType dengan benar
+    final jobTypeString = selectedJobTypes.join(',');
+
+    developer.log('DEBUG: selectedJobTypes = $selectedJobTypes');
+    developer.log('DEBUG: jobTypeString = $jobTypeString');
+
+    final battery = Battery(
+      id: widget.battery?.id,
+      branch: branchCtrl.text.trim(),
+      statusMekanik: statusMekanikCtrl.text.trim(),
+      pic: picCtrl.text.trim(),
+      partner: partnerCtrl.text.trim(),
+      inTime: inTime == null
+          ? null
+          : '${inTime!.hour.toString().padLeft(2, '0')}:${inTime!.minute.toString().padLeft(2, '0')}',
+      outTime: outTime == null
+          ? null
+          : '${outTime!.hour.toString().padLeft(2, '0')}:${outTime!.minute.toString().padLeft(2, '0')}',
+      vehicle: vehicleCtrl.text.trim(),
+      nopol: nopolCtrl.text.trim(),
+      date: date == null ? null : DateFormat('yyyy-MM-dd').format(date!),
+
+      // Unit Info
+      customer: customerCtrl.text.trim(),
+      location: locationCtrl.text.trim(),
+      serialNumber: unitSerialCtrl.text.trim(),
+      unitType: unitTypeCtrl.text.trim(),
+
+      // Battery Info
+      snBattery: snBatteryCtrl.text.trim(),
+      batteryType: batteryTypeCtrl.text.trim(),
+      batteryYear: int.tryParse(batteryYearCtrl.text.trim()),
+
+      // PERBAIKAN: Gunakan jobTypeString yang sudah di-join
+      jobType: jobTypeString,
+      categoryJob: categoryJobVal,
+      statusUnit: statusUnitVal,
+
+      problemDate: problemDate == null
+          ? null
+          : DateFormat('yyyy-MM-dd').format(problemDate!),
+      rfuDate: rfuDate == null
+          ? null
+          : DateFormat('yyyy-MM-dd').format(rfuDate!),
+      problem: problemCtrl.text.trim(),
+      action: actionCtrl.text.trim(),
+      recommendations: recommendations,
+      installParts: installParts,
+    );
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(child: CircularProgressIndicator()),
+    );
+
+    try {
+      Map<String, dynamic> res;
+      if (widget.battery == null) {
+        res = await api.createBattery(battery);
+      } else {
+        res = await api.updateBattery(battery);
+      }
+
+      if (!mounted) return;
+      Navigator.pop(context);
+
+      if (res['ok'] == true) {
+        setState(() => _hasUnsavedChanges = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sukses: ${res['message'] ?? 'OK'}'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        Navigator.pop(context, true);
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal: ${res['message']}'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      developer.log('Submit error: $e');
+    }
+  }
+
+  Future<PartItem?> _openPartModal({
+    required bool isInstall,
+    PartItem? initial,
+  }) async {
+    final res = await showDialog<PartItem>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => PartDialog(isInstall: isInstall, initial: initial),
+    );
+    if (res != null) _onFormChanged();
+    return res;
+  }
+
+  Future<void> _onAddRecommendation() async {
+    final item = await _openPartModal(isInstall: false, initial: null);
+    if (item != null) {
+      setState(() => recommendations.add(item));
+    }
+  }
+
+  Future<void> _onAddInstallPart() async {
+    final item = await _openPartModal(isInstall: true, initial: null);
+    if (item != null) {
+      setState(() => installParts.add(item));
+    }
+  }
+
+  void _onCancel() {
+    if (_hasUnsavedChanges) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Discard Changes?'),
+          content: const Text(
+            'You have unsaved changes. Are you sure you want to discard them?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop(true);
+                Navigator.of(context).pop(false);
+              },
+              child: const Text('Discard'),
+            ),
+          ],
+        ),
+      );
+    } else {
+      Navigator.of(context).pop(false);
+    }
+  }
+
+  @override
+  void dispose() {
+    branchCtrl.dispose();
+    statusMekanikCtrl.dispose();
+    picCtrl.dispose();
+    partnerCtrl.dispose();
+    vehicleCtrl.dispose();
+    nopolCtrl.dispose();
+    dateCtrl.dispose();
+    customerCtrl.dispose();
+    locationCtrl.dispose();
+    unitTypeCtrl.dispose();
+    unitSerialCtrl.dispose();
+    snBatteryCtrl.dispose();
+    batteryTypeCtrl.dispose();
+    batteryYearCtrl.dispose();
+    problemDateCtrl.dispose();
+    rfuDateCtrl.dispose();
+    problemCtrl.dispose();
+    actionCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<String> statusUnits = ['RFU', 'BREAKDOWN', 'MONITORING'];
+
+    return PopScope(
+      canPop: !_hasUnsavedChanges,
+      onPopInvokedWithResult: (didPop, result) async {
+        if (didPop) return;
+        final shouldPop = await _onWillPop();
+        if (shouldPop && mounted) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) Navigator.pop(context);
+          });
+        }
+      },
+      child: Scaffold(
+        backgroundColor: backgroundColor,
+        appBar: AppBar(
+          title: Text(
+            widget.battery == null ? 'Tambah Battery' : 'Edit Battery',
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          backgroundColor: primaryColor,
+          elevation: 2,
+          iconTheme: const IconThemeData(color: Colors.white),
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(16),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // SECTION 1: TEKNISI INFO
+                  _buildCard('Informasi Teknisi', [
+                    TextFormField(
+                      controller: branchCtrl,
+                      decoration: _buildInputDecoration(
+                        'BRANCH',
+                        isReadOnly: true,
+                      ),
+                      readOnly: true,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: statusMekanikCtrl,
+                      decoration: _buildInputDecoration(
+                        'STATUS MEKANIK',
+                        isReadOnly: true,
+                      ),
+                      readOnly: true,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: picCtrl,
+                      decoration: _buildInputDecoration(
+                        'PIC',
+                        isReadOnly: true,
+                      ),
+                      readOnly: true,
+                    ),
+                    const SizedBox(height: 12),
+                    loadingPartners
+                        ? const LinearProgressIndicator()
+                        : InputDecorator(
+                            decoration: _buildInputDecoration('PARTNER'),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: partnerCtrl.text.isEmpty
+                                    ? null
+                                    : partnerCtrl.text,
+                                isExpanded: true,
+                                hint: const Text('Pilih Partner'),
+                                items: partnerList.map((e) {
+                                  return DropdownMenuItem(
+                                    value: e,
+                                    child: Text(e),
+                                  );
+                                }).toList(),
+                                onChanged: (v) {
+                                  if (v != null) {
+                                    setState(() => partnerCtrl.text = v);
+                                    _onFormChanged();
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                  ]),
+                  const SizedBox(height: 16),
+
+                  // SECTION 2: KENDARAAN & WAKTU
+                  _buildCard('Kendaraan & Waktu', [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => _pickTime(
+                              context,
+                              inTime,
+                              (t) => setState(() => inTime = t),
+                            ),
+                            child: InputDecorator(
+                              decoration: _buildInputDecoration('IN (HH:MM)'),
+                              child: Text(_fmtTime(inTime)),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => _pickTime(
+                              context,
+                              outTime,
+                              (t) => setState(() => outTime = t),
+                            ),
+                            child: InputDecorator(
+                              decoration: _buildInputDecoration('OUT (HH:MM)'),
+                              child: Text(_fmtTime(outTime)),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: vehicleCtrl,
+                      decoration: _buildInputDecoration('VEHICLE'),
+                      validator: (v) =>
+                          v?.isEmpty ?? true ? 'Harus diisi' : null,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: nopolCtrl,
+                      decoration: _buildInputDecoration('NOPOL'),
+                      validator: (v) =>
+                          v?.isEmpty ?? true ? 'Harus diisi' : null,
+                    ),
+                    const SizedBox(height: 12),
+                    InkWell(
+                      onTap: () => _pickDate(
+                        context,
+                        date,
+                        (d) => setState(() {
+                          date = d;
+                          dateCtrl.text = _fmtDate(d);
+                        }),
+                      ),
+                      child: InputDecorator(
+                        decoration: _buildInputDecoration('DATE'),
+                        child: Text(
+                          dateCtrl.text.isEmpty
+                              ? 'Pilih Tanggal'
+                              : dateCtrl.text,
+                        ),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+
+                  // SECTION 3: UNIT INFO (CASCADE DROPDOWNS)
+                  _buildCard('Unit Info (Pilih Unit)', [
+                    // 3.1 Customer
+                    loadingCustomers
+                        ? const LinearProgressIndicator()
+                        : InputDecorator(
+                            decoration: _buildInputDecoration('CUSTOMER'),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: customerCtrl.text.isEmpty
+                                    ? null
+                                    : customerCtrl.text,
+                                isExpanded: true,
+                                hint: const Text('Pilih Customer'),
+                                items: customerList.map((e) {
+                                  return DropdownMenuItem(
+                                    value: e,
+                                    child: Text(e),
+                                  );
+                                }).toList(),
+                                onChanged: (v) {
+                                  if (v != null) _onCustomerChanged(v);
+                                },
+                              ),
+                            ),
+                          ),
+                    const SizedBox(height: 12),
+
+                    // 3.2 Location
+                    loadingLocations
+                        ? const LinearProgressIndicator()
+                        : InputDecorator(
+                            decoration: _buildInputDecoration('LOCATION'),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: locationCtrl.text.isEmpty
+                                    ? null
+                                    : locationCtrl.text,
+                                isExpanded: true,
+                                hint: const Text('Pilih Location'),
+                                items: locationList.map((e) {
+                                  return DropdownMenuItem(
+                                    value: e,
+                                    child: Text(e),
+                                  );
+                                }).toList(),
+                                onChanged: (v) {
+                                  if (v != null) _onLocationChanged(v);
+                                },
+                              ),
+                            ),
+                          ),
+                    const SizedBox(height: 12),
+
+                    // 3.3 Unit Type (Auto Populated from Location Units)
+                    loadingUnits
+                        ? const LinearProgressIndicator()
+                        : InputDecorator(
+                            decoration: _buildInputDecoration('UNIT TYPE'),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: unitTypeCtrl.text.isEmpty
+                                    ? null
+                                    : unitTypeCtrl.text,
+                                isExpanded: true,
+                                hint: _allUnitsAtLocation.isEmpty
+                                    ? const Text('Pilih Location Dulu')
+                                    : const Text('Pilih Unit Type'),
+                                items: _availableUnitTypes.map((e) {
+                                  return DropdownMenuItem(
+                                    value: e,
+                                    child: Text(e),
+                                  );
+                                }).toList(),
+                                onChanged: _allUnitsAtLocation.isEmpty
+                                    ? null
+                                    : (v) {
+                                        if (v != null) _onUnitTypeChanged(v);
+                                      },
+                              ),
+                            ),
+                          ),
+                    const SizedBox(height: 12),
+
+                    // 3.4 Unit Serial Number (Filtered by Type)
+                    InputDecorator(
+                      decoration: _buildInputDecoration('UNIT SERIAL NUMBER'),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: unitSerialCtrl.text.isEmpty
+                              ? null
+                              : unitSerialCtrl.text,
+                          isExpanded: true,
+                          hint: _availableSerialNumbers.isEmpty
+                              ? const Text('Pilih Unit Type Dulu')
+                              : const Text('Pilih SN'),
+                          items: _availableSerialNumbers.map((e) {
+                            return DropdownMenuItem(value: e, child: Text(e));
+                          }).toList(),
+                          onChanged: _availableSerialNumbers.isEmpty
+                              ? null
+                              : (v) {
+                                  if (v != null) _onUnitSerialChanged(v);
+                                },
+                        ),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+
+                  // SECTION 4: BATTERY INFO
+                  _buildCard('Informasi Battery', [
+                    TextFormField(
+                      controller: snBatteryCtrl,
+                      decoration: _buildInputDecoration('BATTERY SN'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: batteryTypeCtrl,
+                      decoration: _buildInputDecoration('BATTERY TYPE'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: batteryYearCtrl,
+                      decoration: _buildInputDecoration('BATTERY YEAR'),
+                      keyboardType: TextInputType.number,
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+
+                  // SECTION 5: JOB TYPE & STATUS
+                  _buildCard('Job Type & Status', [
+                    InputDecorator(
+                      decoration: _buildInputDecoration('CATEGORY JOB'),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: categoryJobVal.isEmpty
+                              ? availableCategoryJobs.first
+                              : categoryJobVal,
+                          isExpanded: true,
+                          items: availableCategoryJobs.map((e) {
+                            return DropdownMenuItem(value: e, child: Text(e));
+                          }).toList(),
+                          onChanged: (v) {
+                            if (v != null) {
+                              setState(() => categoryJobVal = v);
+                              _onFormChanged();
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    InkWell(
+                      onTap: _showJobTypeSelection,
+                      child: InputDecorator(
+                        decoration: _buildInputDecoration(
+                          'JOB TYPE (Multi-Select)',
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                selectedJobTypes.isEmpty
+                                    ? 'Pilih Job Type'
+                                    : selectedJobTypes.join(', '),
+                              ),
+                            ),
+                            Icon(Icons.arrow_drop_down, color: primaryColor),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    InputDecorator(
+                      decoration: _buildInputDecoration('STATUS UNIT'),
+                      child: DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: statusUnitVal,
+                          isExpanded: true,
+                          items: statusUnits.map((e) {
+                            return DropdownMenuItem(value: e, child: Text(e));
+                          }).toList(),
+                          onChanged: (v) {
+                            if (v != null) {
+                              setState(() => statusUnitVal = v);
+                              _onFormChanged();
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+
+                  // SECTION 6: PROBLEM & ACTION
+                  _buildCard('Problem & Action', [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => _pickDate(
+                              context,
+                              problemDate,
+                              (d) => setState(() {
+                                problemDate = d;
+                                problemDateCtrl.text = _fmtDate(d);
+                              }),
+                            ),
+                            child: InputDecorator(
+                              decoration: _buildInputDecoration('PROBLEM DATE'),
+                              child: Text(problemDateCtrl.text),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: InkWell(
+                            onTap: () => _pickDate(
+                              context,
+                              rfuDate,
+                              (d) => setState(() {
+                                rfuDate = d;
+                                rfuDateCtrl.text = _fmtDate(d);
+                              }),
+                            ),
+                            child: InputDecorator(
+                              decoration: _buildInputDecoration('RFU DATE'),
+                              child: Text(rfuDateCtrl.text),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: problemCtrl,
+                      decoration: _buildInputDecoration('PROBLEM'),
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: actionCtrl,
+                      decoration: _buildInputDecoration('ACTION'),
+                      maxLines: 10,
+                    ),
+                  ]),
+                  const SizedBox(height: 16),
+
+                  // SECTION 7: RECOMMENDATIONS
+                  _buildPartSection('Recommendations', recommendations, false),
+                  const SizedBox(height: 16),
+
+                  // SECTION 8: INSTALL PARTS
+                  _buildPartSection('Install Parts', installParts, true),
+                  const SizedBox(height: 24),
+
+                  // ACTION BUTTONS
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: _onCancel,
+                          style: OutlinedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            side: BorderSide(color: borderColor),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          child: const Text('Batal'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: ElevatedButton(
+                          onPressed: _submit,
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryColor,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 16),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          child: Text(
+                            widget.battery == null ? 'Simpan' : 'Update',
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ===== WIDGET BUILDERS =====
+
+  Widget _buildCard(String title, List<Widget> children) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: primaryColor,
+              ),
+            ),
+            const SizedBox(height: 16),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPartSection(String title, List<PartItem> items, bool isInstall) {
+    return Card(
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                    color: primaryColor,
+                  ),
+                ),
+                ElevatedButton.icon(
+                  onPressed: isInstall
+                      ? _onAddInstallPart
+                      : _onAddRecommendation,
+                  icon: const Icon(Icons.add, size: 20),
+                  label: const Text('Add'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: primaryColor,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (items.isEmpty)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: backgroundColor,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  'No items added',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: textColor.withValues(alpha: 0.5),
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+            for (int i = 0; i < items.length; i++)
+              Container(
+                margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: borderColor),
+                ),
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+                  title: Text(
+                    '${items[i].partNumber ?? '-'} — ${items[i].partName ?? '-'}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: textColor,
+                    ),
+                  ),
+                  subtitle: Text('Qty: ${items[i].qty ?? 0}'),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: Icon(Icons.edit, size: 20, color: primaryColor),
+                        onPressed: () async {
+                          final edited = await _openPartModal(
+                            isInstall: isInstall,
+                            initial: items[i],
+                          );
+                          if (edited != null) {
+                            setState(() => items[i] = edited);
+                          }
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(
+                          Icons.delete,
+                          size: 20,
+                          color: Colors.red,
+                        ),
+                        onPressed: () => setState(() => items.removeAt(i)),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ===== PART DIALOG (UNCHANGED) =====
+class PartDialog extends StatefulWidget {
+  final bool isInstall;
+  final PartItem? initial;
+  const PartDialog({super.key, required this.isInstall, this.initial});
+
+  @override
+  State<PartDialog> createState() => _PartDialogState();
+}
+
+class _PartDialogState extends State<PartDialog> {
+  late final TextEditingController pnCtrl;
+  late final TextEditingController nameCtrl;
+  late final TextEditingController qtyCtrl;
+  late final TextEditingController remarksCtrl;
+  late final TextEditingController noJobCtrl;
+  late final TextEditingController noPrCtrl;
+  final Color primaryColor = const Color(0xFF2C5AA0);
+
+  @override
+  void initState() {
+    super.initState();
+    pnCtrl = TextEditingController(text: widget.initial?.partNumber ?? '');
+    nameCtrl = TextEditingController(text: widget.initial?.partName ?? '');
+    qtyCtrl = TextEditingController(
+      text: widget.initial?.qty?.toString() ?? '1',
+    );
+    remarksCtrl = TextEditingController(text: widget.initial?.remarks ?? '');
+    noJobCtrl = TextEditingController(text: widget.initial?.noJob ?? '');
+    noPrCtrl = TextEditingController(text: widget.initial?.noPr ?? '');
+  }
+
+  @override
+  void dispose() {
+    pnCtrl.dispose();
+    nameCtrl.dispose();
+    qtyCtrl.dispose();
+    remarksCtrl.dispose();
+    noJobCtrl.dispose();
+    noPrCtrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final pn = pnCtrl.text.trim();
+    final name = nameCtrl.text.trim();
+    final qty = int.tryParse(qtyCtrl.text.trim()) ?? 0;
+
+    if (pn.isEmpty && name.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Isi Part Number atau Part Name')),
+      );
+      return;
+    }
+    if (qty <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Qty harus lebih besar dari 0')),
+      );
+      return;
+    }
+
+    final item = PartItem(
+      partNumber: pn.isEmpty ? null : pn,
+      partName: name.isEmpty ? null : name,
+      qty: qty,
+      remarks: remarksCtrl.text.trim().isEmpty ? null : remarksCtrl.text.trim(),
+      noJob: widget.isInstall
+          ? (noJobCtrl.text.trim().isEmpty ? null : noJobCtrl.text.trim())
+          : null,
+      noPr: widget.isInstall
+          ? (noPrCtrl.text.trim().isEmpty ? null : noPrCtrl.text.trim())
+          : null,
+    );
+    Navigator.of(context).pop(item);
+  }
+
+  InputDecoration _buildInputDecoration(String label) {
+    return InputDecoration(
+      labelText: label,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      elevation: 4,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              widget.isInstall
+                  ? (widget.initial != null
+                        ? 'Edit Install Part'
+                        : 'Add Install Part')
+                  : (widget.initial != null
+                        ? 'Edit Recommendation'
+                        : 'Add Recommendation'),
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w600,
+                color: primaryColor,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Expanded(
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextFormField(
+                      controller: pnCtrl,
+                      decoration: _buildInputDecoration('PART NUMBER'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: nameCtrl,
+                      decoration: _buildInputDecoration('PART NAME'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: qtyCtrl,
+                      keyboardType: TextInputType.number,
+                      decoration: _buildInputDecoration('QTY'),
+                    ),
+                    if (widget.isInstall) ...[
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: noJobCtrl,
+                        decoration: _buildInputDecoration('NO JOB'),
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: noPrCtrl,
+                        decoration: _buildInputDecoration('NO PR'),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    TextFormField(
+                      controller: remarksCtrl,
+                      decoration: _buildInputDecoration('REMARKS'),
+                      maxLines: 2,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(null),
+                    child: const Text('Batal'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: _submit,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: primaryColor,
+                      foregroundColor: Colors.white,
+                    ),
+                    child: Text(widget.initial != null ? 'Update' : 'Tambah'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

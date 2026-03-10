@@ -1,0 +1,830 @@
+// lib/screens/charger/charger_screen.dart
+import 'dart:io';
+import 'dart:developer';
+import 'package:flutter/material.dart';
+import 'package:excel/excel.dart' as excel;
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
+
+import '../../models/charger.dart';
+import '../../models/user.dart';
+import '../../services/api_service.dart';
+import '../../services/ad_service.dart';
+import '../../constants/colors.dart';
+import '../../constants/typography.dart';
+import 'charger_detail_screen.dart';
+import 'charger_form.dart';
+import '../../widgets/custom_app_bar.dart';
+
+class ChargerScreen extends StatefulWidget {
+  final User user;
+  const ChargerScreen({super.key, required this.user});
+
+  @override
+  State<ChargerScreen> createState() => _ChargerScreenState();
+}
+
+class _ChargerScreenState extends State<ChargerScreen> {
+  final ApiService api = ApiService();
+  final AdService _adService = AdService();
+  final TextEditingController _searchController = TextEditingController();
+
+  List<Charger> _allCharger = [];
+  List<Charger> _filteredCharger = [];
+  bool _loading = false;
+  String _searchQuery = '';
+  String? _error;
+
+  Map<String, List<Charger>> _groupedCharger = {};
+  Set<String> _expandedMonths = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCharger();
+    _loadAds();
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  Future<void> _loadAds() async {
+    await _adService.loadInterstitialAd();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  // --- LOGIKA FILTER & GROUPING ---
+
+  void _onSearchChanged() {
+    final query = _searchController.text.trim();
+    if (query == _searchQuery) return;
+    setState(() => _searchQuery = query);
+    _applyFilter();
+  }
+
+  void _applyFilter() {
+    final q = _searchQuery.toLowerCase();
+    if (q.isEmpty) {
+      setState(() => _filteredCharger = List.from(_allCharger));
+    } else {
+      setState(() {
+        _filteredCharger = _allCharger.where((c) {
+          final serial = (c.serialNumber ?? '').toLowerCase();
+          final customer = (c.customer ?? '').toLowerCase();
+          final branch = (c.branch ?? '').toLowerCase();
+          final status = (c.statusUnit ?? '').toLowerCase();
+          final pic = (c.pic ?? '').toLowerCase();
+          final category = (c.categoryJob ?? '').toLowerCase();
+          final snCharger = (c.snCharger ?? '').toLowerCase();
+
+          return serial.contains(q) ||
+              customer.contains(q) ||
+              branch.contains(q) ||
+              status.contains(q) ||
+              pic.contains(q) ||
+              category.contains(q) ||
+              snCharger.contains(q);
+        }).toList();
+      });
+    }
+    _groupChargerByMonth();
+  }
+
+  void _groupChargerByMonth() {
+    final Map<String, List<Charger>> grouped = {};
+
+    for (final charger in _filteredCharger) {
+      final monthKey = _getMonthKey(charger.date ?? charger.createdAt);
+      if (!grouped.containsKey(monthKey)) {
+        grouped[monthKey] = [];
+      }
+      grouped[monthKey]!.add(charger);
+    }
+
+    final Map<String, DateTime> monthDates = {};
+    for (final key in grouped.keys) {
+      monthDates[key] = _parseMonthKeyToDate(key);
+    }
+
+    final sortedKeys = grouped.keys.toList()
+      ..sort((a, b) => monthDates[b]!.compareTo(monthDates[a]!));
+
+    final sortedMap = <String, List<Charger>>{};
+    for (final key in sortedKeys) {
+      grouped[key]!.sort((a, b) {
+        final dateA = _parseDate(a.date ?? a.createdAt);
+        final dateB = _parseDate(b.date ?? b.createdAt);
+        return dateB.compareTo(dateA);
+      });
+      sortedMap[key] = grouped[key]!;
+    }
+
+    setState(() {
+      _groupedCharger = sortedMap;
+      if (_groupedCharger.isNotEmpty && _expandedMonths.isEmpty) {
+        _expandedMonths = {_groupedCharger.keys.first};
+      }
+    });
+  }
+
+  // --- HELPERS DATE ---
+
+  String _getMonthKey(String? dateString) {
+    if (dateString == null || dateString.isEmpty) {
+      return 'Unknown Date';
+    }
+    try {
+      final date = DateTime.parse(dateString);
+      return '${_getMonthName(date.month)} ${date.year}';
+    } catch (e) {
+      return 'Unknown Date';
+    }
+  }
+
+  String _getMonthName(int month) {
+    const months = [
+      'Januari',
+      'Februari',
+      'Maret',
+      'April',
+      'Mei',
+      'Juni',
+      'Juli',
+      'Agustus',
+      'September',
+      'Oktober',
+      'November',
+      'Desember',
+    ];
+    return month >= 1 && month <= 12 ? months[month - 1] : 'Unknown';
+  }
+
+  int _getMonthNumber(String monthName) {
+    const months = {
+      'Januari': 1,
+      'Februari': 2,
+      'Maret': 3,
+      'April': 4,
+      'Mei': 5,
+      'Juni': 6,
+      'Juli': 7,
+      'Agustus': 8,
+      'September': 9,
+      'Oktober': 10,
+      'November': 11,
+      'Desember': 12,
+    };
+    return months[monthName] ?? 1;
+  }
+
+  DateTime _parseMonthKeyToDate(String monthKey) {
+    if (monthKey == 'Unknown Date') return DateTime(1970);
+    try {
+      final parts = monthKey.split(' ');
+      final monthName = parts[0];
+      final year = int.tryParse(parts[1]) ?? 1970;
+      final month = _getMonthNumber(monthName);
+      return DateTime(year, month, 1);
+    } catch (e) {
+      return DateTime(1970);
+    }
+  }
+
+  DateTime _parseDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return DateTime(1970);
+    try {
+      return DateTime.parse(dateString);
+    } catch (e) {
+      return DateTime(1970);
+    }
+  }
+
+  void _toggleMonthExpansion(String monthKey) {
+    setState(() {
+      if (_expandedMonths.contains(monthKey)) {
+        _expandedMonths.remove(monthKey);
+      } else {
+        _expandedMonths.add(monthKey);
+      }
+    });
+  }
+
+  // --- API LOAD ---
+
+  Future<void> _loadCharger() async {
+    if (!mounted) return;
+
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+
+    try {
+      log('🔄 Fetching charger for branch: ${widget.user.branch}');
+      final list = await api.fetchChargerByBranch(widget.user.branch);
+      log('✅ Loaded ${list.length} charger records');
+
+      if (!mounted) return;
+      setState(() {
+        _allCharger = list;
+        _filteredCharger = List.from(list);
+      });
+      _applyFilter();
+    } catch (e) {
+      log('❌ Error loading charger: $e');
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _allCharger = [];
+        _filteredCharger = [];
+        _groupedCharger = {};
+      });
+      _showSnackBar('Gagal memuat charger: $e', AppColors.error);
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  // --- EXPORT TO EXCEL ---
+
+  bool get _canExport {
+    final allowed = ['ADMIN DRR', 'KOORDINATOR', 'PLANNER'];
+    return allowed.contains(widget.user.statusUser.toUpperCase());
+  }
+
+// Pastikan import yang digunakan adalah:
+  // import 'package:share_plus/share_plus.dart' as share_plus;
+  // Atau jika Anda tidak menggunakan alias, cukup import 'package:share_plus/share_plus.dart';
+
+  Future<void> _exportToExcel() async {
+    await _adService.initialize();
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Menyiapkan file Excel...'),
+        duration: Duration(seconds: 1),
+      ),
+    );
+
+    try {
+      var excelFile = excel.Excel.createExcel();
+      excel.Sheet sheet = excelFile['Charger Data'];
+      if (excelFile.sheets.containsKey('Sheet1')) {
+        excelFile.delete('Sheet1');
+      }
+
+      List<String> headers = [
+        'category_job',
+        'id',
+        'branch',
+        'status_mekanik',
+        'pic',
+        'partner',
+        'in_time',
+        'out_time',
+        'vehicle',
+        'nopol',
+        'date',
+        'sn_charger',
+        'charger_type',
+        'charger_year',
+        'customer',
+        'location',
+        'serial_number',
+        'unit_type',
+        'job_type',
+        'status_unit',
+        'problem_date',
+        'rfu_date',
+        'problem',
+        'action',
+        'recommendations',
+        'install_parts',
+        'created_at',
+        'updated_at',
+      ];
+
+      sheet.appendRow(headers.map((e) => excel.TextCellValue(e)).toList());
+
+      for (var c in _filteredCharger) {
+        List<excel.CellValue> row = [
+          excel.TextCellValue(c.categoryJob ?? '-'),
+          excel.TextCellValue(c.id?.toString() ?? '-'),
+          excel.TextCellValue(c.branch ?? '-'),
+          excel.TextCellValue(c.statusMekanik ?? '-'),
+          excel.TextCellValue(c.pic ?? '-'),
+          excel.TextCellValue(c.partner ?? '-'),
+          excel.TextCellValue(c.inTime ?? '-'),
+          excel.TextCellValue(c.outTime ?? '-'),
+          excel.TextCellValue(c.vehicle ?? '-'),
+          excel.TextCellValue(c.nopol ?? '-'),
+          excel.TextCellValue(c.date ?? '-'),
+          excel.TextCellValue(c.snCharger ?? '-'),
+          excel.TextCellValue(c.chargerType ?? '-'),
+          excel.TextCellValue((c.chargerYear ?? '-').toString()),
+          excel.TextCellValue(c.customer ?? '-'),
+          excel.TextCellValue(c.location ?? '-'),
+          excel.TextCellValue(c.serialNumber ?? '-'),
+          excel.TextCellValue(c.unitType ?? '-'),
+          excel.TextCellValue(c.jobType ?? '-'), // Job Type String
+          excel.TextCellValue(c.statusUnit ?? '-'),
+          excel.TextCellValue(c.problemDate ?? '-'),
+          excel.TextCellValue(c.rfuDate ?? '-'),
+          excel.TextCellValue(c.problem ?? '-'),
+          excel.TextCellValue(c.action ?? '-'),
+          excel.TextCellValue(
+            (c.recommendations?.length ?? 0).toString(),
+          ), // Summary count
+          excel.TextCellValue((c.installParts?.length ?? 0).toString()),
+          excel.TextCellValue(c.createdAt ?? '-'),
+          excel.TextCellValue(c.updatedAt ?? '-'),
+        ];
+        sheet.appendRow(row);
+      }
+
+      final directory = await getTemporaryDirectory();
+      final fileName =
+          "charger_data_${DateTime.now().millisecondsSinceEpoch}.xlsx";
+      final path = "${directory.path}/$fileName";
+      final file = File(path);
+      final fileBytes = excelFile.save();
+
+      if (fileBytes != null) {
+        await file.writeAsBytes(fileBytes);
+        if (!mounted) return;
+
+        // 🚀 PERBAIKAN: Menggunakan SharePlus.instance.share()
+        await SharePlus.instance.share(
+          ShareParams(
+            files: [XFile(path)],
+            subject:
+                'Export Data Charger', // Gunakan subject sebagai pengganti text/body
+          ),
+        );
+      }
+    } catch (e) {
+      log('Error exporting excel: ${e.toString()}');
+      _showSnackBar('Gagal export excel: ${e.toString()}', AppColors.error);
+    }
+  }
+
+  // --- BUILD UI ---
+
+  void _showSnackBar(String message, Color color) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message), backgroundColor: color));
+  }
+
+  PreferredSizeWidget _buildAppBar() {
+    return CustomAppBar(
+      title: '⚡ Charger Management',
+      subtitle: '${widget.user.name} • ${widget.user.branch}',
+      bottom: SearchAppBarBottom(
+        searchController: _searchController,
+        hintText: 'Cari SN, customer, charger SN...',
+        itemCount: _filteredCharger.length,
+        groupCount: _groupedCharger.length,
+        onRefresh: _loadCharger,
+        showGroupCount: true,
+      ),
+    );
+  }
+
+  // === COLOR HELPERS ===
+  Color _getJobTypeColor(String jobType) {
+    final lower = jobType.toLowerCase();
+    if (lower.contains('troubleshooting')) return Colors.orange;
+    if (lower.contains('install')) return Colors.blue;
+    if (lower.contains('repair')) return Colors.green;
+    return Colors.grey;
+  }
+
+  // === WIDGET CHIP KECIL UNTUK LIST ===
+  Widget _buildJobTypeChipSmall(String jobTypeString) {
+    if (jobTypeString.isEmpty || jobTypeString == '-') {
+      return const SizedBox.shrink();
+    }
+
+    // Ambil hanya job type pertama untuk tampilan compact di list
+    final firstJobType = jobTypeString.split(',').first.trim();
+    final color = _getJobTypeColor(firstJobType);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withAlpha(25),
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(color: color.withAlpha(100)),
+      ),
+      child: Text(
+        firstJobType,
+        style: TextStyle(
+          fontSize: 9,
+          color: color,
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStatusBadge(String? status) {
+    final statusData = _getStatusData(status ?? '');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: statusData.color.withAlpha(38),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(statusData.icon, size: 12, color: statusData.color),
+          const SizedBox(width: 4),
+          SelectableText(
+            statusData.label,
+            style: TextStyle(
+              color: statusData.color,
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  ({String label, Color color, IconData icon}) _getStatusData(String status) {
+    switch (status.toUpperCase()) {
+      case 'RFU':
+        return (label: 'RFU', color: AppColors.rfu, icon: Icons.check_circle);
+      case 'BREAKDOWN':
+        return (
+          label: 'BREAKDOWN',
+          color: AppColors.breakdown,
+          icon: Icons.error,
+        );
+      case 'MONITORING':
+        return (
+          label: 'MONITORING',
+          color: AppColors.monitoring,
+          icon: Icons.remove_red_eye,
+        );
+      default:
+        return (
+          label: status.toUpperCase(),
+          color: AppColors.disabled,
+          icon: Icons.help,
+        );
+    }
+  }
+
+  Widget _buildMonthSection(String monthKey, List<Charger> chargerList) {
+    final isExpanded = _expandedMonths.contains(monthKey);
+    final count = chargerList.length;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+      elevation: 2,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () => _toggleMonthExpansion(monthKey),
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.primary.withAlpha(25),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Icon(
+                      Icons.calendar_month,
+                      color: AppColors.primary,
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SelectableText(
+                          monthKey,
+                          style: AppTextStyles.headlineSmall.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        SelectableText(
+                          '$count charger record${count > 1 ? 's' : ''}',
+                          style: AppTextStyles.bodyMedium,
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    color: AppColors.primary,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (isExpanded) ...[
+            const Divider(height: 1),
+            ...chargerList.map((c) => _buildChargerCard(c)),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildChargerCard(Charger charger) {
+    return Container(
+      decoration: BoxDecoration(
+        border: Border(top: BorderSide(color: Colors.grey.shade200, width: 1)),
+      ),
+      child: InkWell(
+        onTap: () => _navigateToDetail(charger),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          child: Row(
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: Colors.blue.withAlpha(25),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Icon(Icons.power, color: Colors.blue, size: 20),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    SelectableText(
+                      charger.customer ?? 'Charger',
+                      style: AppTextStyles.bodyLarge.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    // Tampilkan Charger SN atau Unit SN
+                    if (charger.snCharger != null &&
+                        charger.snCharger!.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.qr_code,
+                            size: 12,
+                            color: AppColors.disabled,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: SelectableText(
+                              'Chg: ${charger.snCharger!}',
+                              style: AppTextStyles.bodySmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ] else if (charger.serialNumber != null &&
+                        charger.serialNumber!.isNotEmpty) ...[
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.tag,
+                            size: 12,
+                            color: AppColors.disabled,
+                          ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: SelectableText(
+                              'Unit: ${charger.serialNumber!}',
+                              style: AppTextStyles.bodySmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.person,
+                          size: 12,
+                          color: AppColors.disabled,
+                        ),
+                        const SizedBox(width: 4),
+                        Expanded(
+                          child: SelectableText(
+                            charger.pic ?? '-',
+                            style: AppTextStyles.caption,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        _buildStatusBadge(charger.statusUnit),
+                        const SizedBox(width: 8),
+
+                        // 🔥 TAMPILKAN JOB TYPE CHIP
+                        if (charger.jobType != null)
+                          _buildJobTypeChipSmall(charger.jobType!),
+
+                        const Spacer(),
+                        SelectableText(
+                          _formatDate(charger.date ?? charger.createdAt),
+                          style: AppTextStyles.caption,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              const Icon(
+                Icons.arrow_forward_ios,
+                size: 16,
+                color: AppColors.primary,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _formatDate(String? dateString) {
+    if (dateString == null || dateString.isEmpty) return '-';
+    try {
+      final date = DateTime.parse(dateString);
+      return '${date.day}/${date.month}/${date.year}';
+    } catch (e) {
+      return dateString;
+    }
+  }
+
+  void _navigateToDetail(Charger charger) async {
+    final currentExpandedMonths = Set<String>.from(_expandedMonths);
+
+    final changed = await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) =>
+            ChargerDetailScreen(charger: charger, user: widget.user),
+      ),
+    );
+
+    if (mounted) {
+      setState(() {
+        _expandedMonths = currentExpandedMonths;
+      });
+    }
+
+    if (changed == true) {
+      _loadCharger();
+    }
+  }
+
+  void _navigateToCreate() async {
+    final currentExpandedMonths = Set<String>.from(_expandedMonths);
+
+    final created = await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => ChargerForm(user: widget.user)),
+    );
+
+    if (mounted) {
+      setState(() {
+        _expandedMonths = currentExpandedMonths;
+      });
+    }
+
+    if (created == true) {
+      _loadCharger();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: _buildAppBar(),
+      body: _buildBody(),
+      floatingActionButton: Column(
+        mainAxisAlignment: MainAxisAlignment.end,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          if (_canExport) ...[
+            FloatingActionButton(
+              heroTag: 'export_charger',
+              onPressed: _exportToExcel,
+              backgroundColor: Colors.green,
+              foregroundColor: Colors.white,
+              tooltip: 'Export Excel',
+              child: const Icon(Icons.file_download),
+            ),
+            const SizedBox(height: 16),
+          ],
+          if (widget.user.canCreateJob)
+            FloatingActionButton(
+              heroTag: 'create_charger',
+              onPressed: _navigateToCreate,
+              backgroundColor: AppColors.primary,
+              foregroundColor: Colors.white,
+              child: const Icon(Icons.add),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) {
+      return const Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            SelectableText(
+              'Memuat data charger...',
+              style: AppTextStyles.bodyMedium,
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.error_outline, size: 64, color: AppColors.error),
+            const SizedBox(height: 16),
+            SelectableText('Error: $_error', style: AppTextStyles.bodyMedium),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loadCharger,
+              child: const Text('Coba Lagi'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_filteredCharger.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.power, size: 64, color: AppColors.disabled),
+            const SizedBox(height: 16),
+            SelectableText(
+              _searchQuery.isEmpty
+                  ? 'Tidak ada data charger'
+                  : 'Tidak ada hasil pencarian',
+              style: AppTextStyles.bodyLarge,
+            ),
+            if (_searchQuery.isEmpty && widget.user.canCreateJob) ...[
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _navigateToCreate,
+                child: const Text('Tambah Charger Pertama'),
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: () async => _loadCharger(),
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        itemCount: _groupedCharger.length,
+        itemBuilder: (context, index) {
+          final monthKey = _groupedCharger.keys.elementAt(index);
+          final chargerList = _groupedCharger[monthKey]!;
+          return _buildMonthSection(monthKey, chargerList);
+        },
+      ),
+    );
+  }
+}

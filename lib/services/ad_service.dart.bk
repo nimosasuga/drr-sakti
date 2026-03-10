@@ -1,0 +1,178 @@
+import 'package:flutter/foundation.dart'; // Diperlukan untuk kDebugMode
+import 'dart:io';
+import 'dart:developer';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
+
+class AdService {
+  static final AdService _instance = AdService._internal();
+  factory AdService() => _instance;
+  AdService._internal();
+
+  // ===========================================================================
+  // KONFIGURASI ID IKLAN
+  // ===========================================================================
+
+  // 1. GOOGLE TEST IDS (Wajib dipakai saat Development/Debug)
+  // Ini adalah ID resmi dari Google untuk pengetesan. Jangan diganti.
+  static const String _googleTestBannerId =
+      'ca-app-pub-3940256099942544/6300978111';
+  static const String _googleTestInterstitialId =
+      'ca-app-pub-3940256099942544/1033173712';
+  // Jika nanti mau menambahkan Rewarded di service ini:
+  // static const String _googleTestRewardedId = 'ca-app-pub-3940256099942544/5224354917';
+
+  // 2. YOUR REAL IDS (Hanya dipakai saat Release/Upload ke PlayStore)
+  static const String _realBannerId = 'ca-app-pub-1438910997839159/6042963507';
+  static const String _realInterstitialId =
+      'ca-app-pub-1438910997839159/7017844262';
+
+  // 3. LOGIKA PEMILIHAN ID OTOMATIS
+  String get _bannerAdUnitId {
+    if (kDebugMode) {
+      log('⚠️ AdMob: Menggunakan TEST ID (Mode Debug)');
+      return _googleTestBannerId;
+    }
+    return _realBannerId;
+  }
+
+  String get _interstitialAdUnitId {
+    if (kDebugMode) {
+      log('⚠️ AdMob: Menggunakan TEST ID (Mode Debug)');
+      return _googleTestInterstitialId;
+    }
+    return _realInterstitialId;
+  }
+
+  // ===========================================================================
+
+  BannerAd? _bannerAd;
+  InterstitialAd? _interstitialAd;
+  bool _isInitialized = false;
+
+  // Initialize AdMob
+  Future<void> initialize() async {
+    // 1. Cek dulu, kalau Web, langsung berhenti.
+    if (kIsWeb) {
+      log('AdMob not supported on Web');
+      return;
+    }
+
+    // 2. Jika sampai sini, berarti bukan Web. Aman cek Platform.
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+
+    try {
+      await MobileAds.instance.initialize();
+      _isInitialized = true;
+      log('AdMob initialized successfully');
+
+      // Optional: Set device sebagai test device jika memakai device fisik untuk debug
+      // RequestConfiguration configuration = RequestConfiguration(testDeviceIds: ['YOUR_DEVICE_ID']);
+      // MobileAds.instance.updateRequestConfiguration(configuration);
+    } catch (e) {
+      log('Failed to initialize AdMob: $e');
+    }
+  }
+
+  // Create banner ad
+  BannerAd createBannerAd() {
+    // Menggunakan getter _bannerAdUnitId yang sudah ada logika kDebugMode
+    return BannerAd(
+      adUnitId: _bannerAdUnitId,
+      request: const AdRequest(),
+      size: AdSize.banner,
+      listener: BannerAdListener(
+        onAdLoaded: (Ad ad) => log('Banner ad loaded ($ad).'),
+        onAdFailedToLoad: (Ad ad, LoadAdError error) {
+          log('Banner ad failed to load: $error');
+          ad.dispose();
+        },
+        onAdOpened: (Ad ad) => log('Banner ad opened.'),
+        onAdClosed: (Ad ad) => log('Banner ad closed.'),
+      ),
+    );
+  }
+
+  // Load and show banner ad
+  Future<BannerAd?> loadBannerAd() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return null;
+    if (!_isInitialized) {
+      await initialize();
+    }
+
+    try {
+      _bannerAd = createBannerAd();
+      await _bannerAd!.load();
+      return _bannerAd;
+    } catch (e) {
+      log('Failed to load banner ad: $e');
+      return null;
+    }
+  }
+
+  // Load interstitial ad
+  Future<void> loadInterstitialAd() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+    if (!_isInitialized) {
+      await initialize();
+    }
+
+    try {
+      // Menggunakan getter _interstitialAdUnitId yang sudah ada logika kDebugMode
+      await InterstitialAd.load(
+        adUnitId: _interstitialAdUnitId,
+        request: const AdRequest(),
+        adLoadCallback: InterstitialAdLoadCallback(
+          onAdLoaded: (InterstitialAd ad) {
+            _interstitialAd = ad;
+            log('Interstitial ad loaded successfully');
+          },
+          onAdFailedToLoad: (LoadAdError error) {
+            log('Interstitial ad failed to load: $error');
+            _interstitialAd = null;
+          },
+        ),
+      );
+    } catch (e) {
+      log('Failed to load interstitial ad: $e');
+    }
+  }
+
+  // Show interstitial ad
+  Future<void> showInterstitialAd() async {
+    if (_interstitialAd != null) {
+      _interstitialAd!.fullScreenContentCallback = FullScreenContentCallback(
+        onAdShowedFullScreenContent: (InterstitialAd ad) =>
+            log('Interstitial ad showed full screen content.'),
+        onAdDismissedFullScreenContent: (InterstitialAd ad) {
+          log('Interstitial ad dismissed full screen content.');
+          ad.dispose();
+          _interstitialAd = null;
+          // Reload for next use
+          loadInterstitialAd();
+        },
+        onAdFailedToShowFullScreenContent: (InterstitialAd ad, AdError error) {
+          log('Interstitial ad failed to show: $error');
+          ad.dispose();
+          _interstitialAd = null;
+          // Reload for next use
+          loadInterstitialAd();
+        },
+      );
+
+      _interstitialAd!.show();
+    } else {
+      log('Interstitial ad is not ready yet');
+      // Try to load again
+      await loadInterstitialAd();
+    }
+  }
+
+  // Dispose ads
+  void dispose() {
+    _bannerAd?.dispose();
+    _interstitialAd?.dispose();
+  }
+
+  // Check if ads are initialized
+  bool get isInitialized => _isInitialized;
+}
