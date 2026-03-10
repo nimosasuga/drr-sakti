@@ -1,0 +1,418 @@
+<?php
+// api/deepseek/helpers.php (COMPLETE VERSION WITH ERROR CODE SUPPORT)
+require_once __DIR__ . '/../config.php';
+
+/**
+ * Check if question is within allowed context
+ */
+function isValidContext($message) {
+    $allowed_keywords = [
+        'update job', 'job', 'pekerjaan', 'tugas',
+        'unit', 'asset', 'aset', 'forklift', 'alat',
+        'delivery', 'pengiriman', 'kirim',
+        'penarikan', 'tarik', 'pickup',
+        'charger', 'pengisian', 'charge', 'cas',
+        'battery', 'baterai', 'aki',
+        'error', 'kesalahan', 'fault', 'masalah', 'trouble',
+        'kode', 'code',
+        'status', 'kondisi', 'info', 'data', 'laporan', 'halo', 'hai', 'help'
+    ];
+    
+    $message_lower = strtolower($message);
+    
+    foreach ($allowed_keywords as $keyword) {
+        if (strpos($message_lower, $keyword) !== false) {
+            return true;
+        }
+    }
+    
+    return false;
+}
+
+/**
+ * Check if table exists
+ */
+function tableExists($pdo, $tableName) {
+    try {
+        $stmt = $pdo->query("SHOW TABLES LIKE '$tableName'");
+        return $stmt->rowCount() > 0;
+    } catch (PDOException $e) {
+        return false;
+    }
+}
+
+/**
+ * Get lightweight context data based on question (MATCHED TO ACTUAL DB)
+ */
+function getSmartContext($pdo, $message, $user_id = null) {
+    $context = [
+        'scope' => [],
+        'data' => [],
+        'summary' => []
+    ];
+    
+    $message_lower = strtolower($message);
+    
+    // Detect what data is needed
+    $needs_jobs = preg_match('/(job|pekerjaan|tugas|update)/i', $message);
+    $needs_units = preg_match('/(unit|asset|forklift|alat)/i', $message);
+    $needs_delivery = preg_match('/(delivery|pengiriman|kirim)/i', $message);
+    $needs_penarikan = preg_match('/(penarikan|tarik|pickup)/i', $message);
+    $needs_charger = preg_match('/(charger|pengisian|charge|cas)/i', $message);
+    $needs_battery = preg_match('/(battery|baterai|aki)/i', $message);
+    $needs_error = preg_match('/(error|kesalahan|fault|kode|code|trouble|1121|2345)/i', $message);
+    
+    try {
+        // 1. Update Jobs (ACTUAL TABLE: update_jobs)
+        if ($needs_jobs && tableExists($pdo, 'update_jobs')) {
+            try {
+                $query = "SELECT id, serial_number, unit_type, job_type, status_unit, 
+                          customer, location, problem, action,
+                          DATE_FORMAT(date, '%Y-%m-%d') as date,
+                          DATE_FORMAT(problem_date, '%Y-%m-%d') as problem_date,
+                          DATE_FORMAT(rfu_date, '%Y-%m-%d') as rfu_date,
+                          pic
+                          FROM update_jobs 
+                          ORDER BY date DESC LIMIT 10";
+                $stmt = $pdo->query($query);
+                $jobs = $stmt->fetchAll();
+                
+                if ($jobs) {
+                    $context['data']['update_jobs'] = $jobs;
+                    $context['scope'][] = 'update_jobs';
+                    $context['summary']['total_jobs'] = count($jobs);
+                }
+            } catch (PDOException $e) {
+                error_log("Update Jobs Query Error: " . $e->getMessage());
+            }
+        }
+        
+        // 2. Unit Assets (ACTUAL TABLE: unit_assets)
+        if ($needs_units && tableExists($pdo, 'unit_assets')) {
+            try {
+                $query = "SELECT serial_number, unit_type, customer, location, 
+                          status, year, branch, jenis_unit
+                          FROM unit_assets 
+                          ORDER BY serial_number LIMIT 20";
+                $stmt = $pdo->query($query);
+                $units = $stmt->fetchAll();
+                
+                if ($units) {
+                    $context['data']['units'] = $units;
+                    $context['scope'][] = 'units';
+                    $context['summary']['total_units'] = count($units);
+                    
+                    // Count by status
+                    $status_count = [];
+                    foreach ($units as $unit) {
+                        $status = $unit['status'] ?? 'unknown';
+                        $status_count[$status] = ($status_count[$status] ?? 0) + 1;
+                    }
+                    $context['summary']['status_breakdown'] = $status_count;
+                }
+            } catch (PDOException $e) {
+                error_log("Units Query Error: " . $e->getMessage());
+            }
+        }
+        
+        // 3. Delivery (ACTUAL TABLE: delivery_units)
+        if ($needs_delivery && tableExists($pdo, 'delivery_units')) {
+            try {
+                $query = "SELECT id, serial_number, unit_type, customer, location, 
+                          status_unit, job_type, battery_sn, charger_sn,
+                          DATE_FORMAT(date, '%Y-%m-%d') as date,
+                          pic, note
+                          FROM delivery_units 
+                          ORDER BY date DESC LIMIT 15";
+                $stmt = $pdo->query($query);
+                $deliveries = $stmt->fetchAll();
+                
+                if ($deliveries) {
+                    $context['data']['deliveries'] = $deliveries;
+                    $context['scope'][] = 'deliveries';
+                    $context['summary']['total_deliveries'] = count($deliveries);
+                }
+            } catch (PDOException $e) {
+                error_log("Deliveries Query Error: " . $e->getMessage());
+            }
+        }
+        
+        // 4. Penarikan (ACTUAL TABLE: penarikan_units)
+        if ($needs_penarikan && tableExists($pdo, 'penarikan_units')) {
+            try {
+                $query = "SELECT id, serial_number, unit_type, customer, location, 
+                          status_unit, job_type, battery_sn, charger_sn,
+                          DATE_FORMAT(date, '%Y-%m-%d') as date,
+                          pic, note
+                          FROM penarikan_units 
+                          ORDER BY date DESC LIMIT 15";
+                $stmt = $pdo->query($query);
+                $penarikan = $stmt->fetchAll();
+                
+                if ($penarikan) {
+                    $context['data']['penarikan'] = $penarikan;
+                    $context['scope'][] = 'penarikan';
+                    $context['summary']['total_penarikan'] = count($penarikan);
+                }
+            } catch (PDOException $e) {
+                error_log("Penarikan Query Error: " . $e->getMessage());
+            }
+        }
+        
+        // 5. Charger Status (ACTUAL TABLE: charger)
+        if ($needs_charger && tableExists($pdo, 'charger')) {
+            try {
+                $query = "SELECT id, sn_charger, charger_type, serial_number as unit_sn,
+                          unit_type, status_unit, customer, location,
+                          DATE_FORMAT(date, '%Y-%m-%d') as date,
+                          problem, action, pic
+                          FROM charger 
+                          WHERE status_unit IN ('RFU', 'MONITORING', 'BREAKDOWN')
+                          ORDER BY date DESC LIMIT 10";
+                $stmt = $pdo->query($query);
+                $chargers = $stmt->fetchAll();
+                
+                if ($chargers) {
+                    $context['data']['chargers'] = $chargers;
+                    $context['scope'][] = 'chargers';
+                    $context['summary']['total_charger_records'] = count($chargers);
+                }
+            } catch (PDOException $e) {
+                error_log("Chargers Query Error: " . $e->getMessage());
+            }
+        }
+        
+        // 6. Battery Health (ACTUAL TABLE: battery)
+        if ($needs_battery && tableExists($pdo, 'battery')) {
+            try {
+                $query = "SELECT id, sn_battery, battery_type, serial_number as unit_sn,
+                          unit_type, status_unit, customer, location,
+                          DATE_FORMAT(date, '%Y-%m-%d') as date,
+                          problem, action, pic
+                          FROM battery 
+                          WHERE status_unit IN ('RFU', 'MONITORING', 'BREAKDOWN')
+                          ORDER BY date DESC LIMIT 15";
+                $stmt = $pdo->query($query);
+                $batteries = $stmt->fetchAll();
+                
+                if ($batteries) {
+                    $context['data']['batteries'] = $batteries;
+                    $context['scope'][] = 'batteries';
+                    $context['summary']['total_battery_records'] = count($batteries);
+                }
+            } catch (PDOException $e) {
+                error_log("Battery Query Error: " . $e->getMessage());
+            }
+        }
+        
+        // 7. Error Reference (ACTUAL TABLES: data_error, function_group, event_group)
+        // Format ERROR: FEXS (F=function, E=event, X=XX column, S=S column)
+        // Example: ERROR 1121 = F1 E1 XX=2 S=1
+        if ($needs_error) {
+            // Check for error format: ERROR FEXS (e.g., ERROR 1121, ERROR 1234)
+            if (preg_match('/ERROR\s*(\d)(\d)(\d)(\d)/i', $message, $matches) || 
+                preg_match('/(\d)(\d)(\d)(\d)/i', $message, $matches)) {
+                
+                $f = $matches[1];   // Function group
+                $e = $matches[2];   // Event group
+                $xx = $matches[3];  // XX column in data_error
+                $s = $matches[4];   // S column in data_error
+                
+                if (tableExists($pdo, 'data_error') && tableExists($pdo, 'function_group') && tableExists($pdo, 'event_group')) {
+                    try {
+                        // Get function_group description
+                        $fg_query = "SELECT F, Deskripsi as function_desc, Contoh as function_example 
+                                    FROM function_group WHERE F = ?";
+                        $fg_stmt = $pdo->prepare($fg_query);
+                        $fg_stmt->execute([$f]);
+                        $func_group = $fg_stmt->fetch();
+                        
+                        // Get event_group description
+                        $eg_query = "SELECT E, Deskripsi as event_desc, Contoh as event_example 
+                                    FROM event_group WHERE E = ?";
+                        $eg_stmt = $pdo->prepare($eg_query);
+                        $eg_stmt->execute([$e]);
+                        $event_group = $eg_stmt->fetch();
+                        
+                        // Get error details from data_error
+                        $error_query = "SELECT * FROM data_error 
+                                       WHERE E = ? AND XX = ? AND S = ?
+                                       LIMIT 1";
+                        $error_stmt = $pdo->prepare($error_query);
+                        $error_stmt->execute([$e, $xx, $s]);
+                        $error_detail = $error_stmt->fetch();
+                        
+                        if ($error_detail || $func_group || $event_group) {
+                            $context['data']['error_lookup'] = [
+                                'error_code' => "ERROR {$f}{$e}{$xx}{$s}",
+                                'function_group' => $func_group ? [
+                                    'code' => $func_group['F'],
+                                    'description' => $func_group['function_desc'],
+                                    'example' => $func_group['function_example']
+                                ] : null,
+                                'event_group' => $event_group ? [
+                                    'code' => $event_group['E'],
+                                    'description' => $event_group['event_desc'],
+                                    'example' => $event_group['event_example']
+                                ] : null,
+                                'error_detail' => $error_detail ? [
+                                    'operating_condition' => $error_detail['Kondisi_Pengoperasian'] ?? null,
+                                    'description' => $error_detail['Deskripsi'] ?? null,
+                                    'cause' => $error_detail['Penyebab'] ?? null,
+                                    'action' => $error_detail['Tindakan'] ?? null,
+                                    'xx' => $error_detail['XX'],
+                                    's' => $error_detail['S']
+                                ] : null
+                            ];
+                            $context['scope'][] = 'error_code';
+                        } else {
+                            $context['data']['error_not_found'] = "ERROR {$f}{$e}{$xx}{$s} tidak ditemukan di database";
+                        }
+                    } catch (PDOException $e) {
+                        error_log("Error Code Query Error: " . $e->getMessage());
+                    }
+                }
+            } else {
+                // General error info jika format tidak cocok
+                if (tableExists($pdo, 'function_group') && tableExists($pdo, 'event_group')) {
+                    try {
+                        $query = "SELECT F as code, Deskripsi as description, Contoh as example
+                                 FROM function_group ORDER BY F LIMIT 10";
+                        $stmt = $pdo->query($query);
+                        $context['data']['function_groups'] = $stmt->fetchAll();
+                        
+                        $query = "SELECT E as code, Deskripsi as description, Contoh as example
+                                 FROM event_group ORDER BY E LIMIT 10";
+                        $stmt = $pdo->query($query);
+                        $context['data']['event_groups'] = $stmt->fetchAll();
+                        
+                        $context['scope'][] = 'error_reference';
+                    } catch (PDOException $e) {
+                        error_log("Error Reference Query Error: " . $e->getMessage());
+                    }
+                }
+            }
+        }
+        
+        // Add metadata
+        $context['metadata'] = [
+            'timestamp' => date('Y-m-d H:i:s'),
+            'user_id' => $user_id,
+            'total_data_points' => array_sum(array_map('count', $context['data']))
+        ];
+        
+    } catch (PDOException $e) {
+        error_log("Context Error: " . $e->getMessage());
+        $context['error'] = 'Database query failed';
+    }
+    
+    return $context;
+}
+
+/**
+ * Format context for AI prompt
+ */
+function formatContextForAI($context) {
+    $formatted = "=== DATA CONTEXT ===\n\n";
+    
+    if (!empty($context['data'])) {
+        foreach ($context['data'] as $key => $data) {
+            $formatted .= strtoupper(str_replace('_', ' ', $key)) . ":\n";
+            $formatted .= json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . "\n\n";
+        }
+    } else {
+        $formatted .= "No specific data available at the moment.\n\n";
+    }
+    
+    if (!empty($context['summary'])) {
+        $formatted .= "=== SUMMARY ===\n";
+        foreach ($context['summary'] as $key => $value) {
+            $formatted .= "- " . ucwords(str_replace('_', ' ', $key)) . ": " . $value . "\n";
+        }
+    }
+    
+    return $formatted;
+}
+
+/**
+ * Build system prompt
+ */
+function buildSystemPrompt($context) {
+    $prompt = "Anda adalah AI Assistant untuk aplikasi DRR SAKTI, sistem manajemen forklift dan battery charging.
+
+**SCOPE ANDA:**
+Anda HANYA boleh menjawab pertanyaan tentang:
+1. Update Job - Status pekerjaan unit forklift
+2. Unit Assets - Data unit forklift dan aset
+3. Delivery - Pengiriman unit ke lokasi
+4. Penarikan - Penarikan/pickup unit dari lokasi
+5. Charger - Status pengisian daya battery
+6. Battery - Kondisi kesehatan battery
+7. Error Codes - Kode error dan troubleshooting
+
+**ERROR CODE FORMAT (PENTING!):**
+Error codes memiliki format: ERROR FEXS (4 angka)
+- F (digit 1): Function Group (dari function_group table kolom F)
+- E (digit 2): Event Group (dari event_group table kolom E)
+- X (digit 3): XX column di data_error
+- S (digit 4): S column di data_error
+Contoh: ERROR 1121 = Function 1, Event 1, XX=2, S=1
+
+Ketika user bertanya tentang error code:
+1. Identifikasi format ERROR FEXS
+2. Cari deskripsi di function_group dan event_group
+3. Cari detail lengkap di data_error (Kondisi, Deskripsi, Penyebab, Tindakan)
+4. Berikan penjelasan lengkap dengan penyebab dan tindakan yang harus diambil
+
+**ATURAN:**
+- Jika pertanyaan di LUAR scope, jawab: \"Maaf, saya hanya dapat membantu dengan informasi terkait Update Job, Unit Assets, Delivery, Penarikan, Charger, Battery, dan Error Codes.\"
+- Gunakan bahasa Indonesia yang mudah dipahami
+- Berikan jawaban spesifik berdasarkan data yang tersedia
+- Jika data tidak tersedia, katakan dengan jelas
+- Format jawaban dengan jelas dan terstruktur
+
+**DATA TERSEDIA:**
+";
+    
+    if (!empty($context['summary'])) {
+        foreach ($context['summary'] as $key => $value) {
+            $prompt .= "- " . ucwords(str_replace('_', ' ', $key)) . ": " . $value . "\n";
+        }
+    } else {
+        $prompt .= "- Data belum tersedia, berikan informasi umum\n";
+    }
+    
+    $prompt .= "\n" . formatContextForAI($context);
+    
+    return $prompt;
+}
+
+/**
+ * Save conversation (with error handling)
+ */
+function saveConversation($pdo, $user_id, $session_id, $user_message, $ai_response, $context, $tokens, $response_time) {
+    if (!tableExists($pdo, 'ai_conversations')) {
+        return false; // Table doesn't exist, skip saving
+    }
+    
+    try {
+        $query = "INSERT INTO ai_conversations 
+                  (user_id, session_id, user_message, ai_response, context_used, tokens_used, response_time_ms)
+                  VALUES (?, ?, ?, ?, ?, ?, ?)";
+        $stmt = $pdo->prepare($query);
+        $stmt->execute([
+            $user_id,
+            $session_id,
+            $user_message,
+            $ai_response,
+            json_encode($context['scope'] ?? []),
+            $tokens,
+            $response_time
+        ]);
+        return true;
+    } catch (PDOException $e) {
+        error_log("Save Conversation Error: " . $e->getMessage());
+        return false;
+    }
+}
+?>

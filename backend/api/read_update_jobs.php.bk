@@ -1,0 +1,119 @@
+<?php
+require 'config.php';
+
+// ===== HANDLE SINGLE JOB BY ID =====
+if (isset($_GET['id'])) {
+    $id = (int)$_GET['id'];
+    if ($id > 0) {
+        try {
+            $stmt = $pdo->prepare("SELECT * FROM update_jobs WHERE id = ? LIMIT 1");
+            $stmt->execute([$id]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($row) {
+                // Process JSON columns for single job
+                if (!empty($row['recommendations_json'])) {
+                    $dec = json_decode($row['recommendations_json'], true);
+                    $row['recommendations'] = $dec !== null ? $dec : [];
+                } else {
+                    $row['recommendations'] = [];
+                }
+
+                if (!empty($row['install_parts_json'])) {
+                    $dec2 = json_decode($row['install_parts_json'], true);
+                    $row['install_parts'] = $dec2 !== null ? $dec2 : [];
+                } else {
+                    $row['install_parts'] = [];
+                }
+
+                unset($row['recommendations_json'], $row['install_parts_json']);
+                
+                // Return single job object
+                echo json_encode($row, JSON_UNESCAPED_UNICODE);
+                exit;
+            } else {
+                http_response_code(404);
+                echo json_encode([
+                    'success' => false, 
+                    'message' => 'Update job not found'
+                ]);
+                exit;
+            }
+        } catch (PDOException $e) {
+            http_response_code(500);
+            echo json_encode([
+                'success' => false, 
+                'message' => 'Database error: '.$e->getMessage()
+            ]);
+            exit;
+        }
+    } else {
+        http_response_code(400);
+        echo json_encode([
+            'success' => false, 
+            'message' => 'Invalid job ID'
+        ]);
+        exit;
+    }
+}
+
+// ===== HANDLE MULTIPLE JOBS (PAGINATION) =====
+// Jika tidak ada parameter ID, lanjut ke multiple jobs
+try {
+    // Pagination parameters
+    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $limit = isset($_GET['limit']) ? min(max(1, (int)$_GET['limit']), 100) : 50;
+    $offset = ($page - 1) * $limit;
+
+    // Get total count
+    $countStmt = $pdo->query("SELECT COUNT(*) as total FROM update_jobs");
+    $total = $countStmt->fetch()['total'];
+    $totalPages = ceil($total / $limit);
+
+    // Get paginated data
+    $stmt = $pdo->prepare("SELECT * FROM update_jobs ORDER BY id DESC LIMIT :limit OFFSET :offset");
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
+    $stmt->execute();
+    
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Process JSON columns for multiple jobs
+    foreach ($rows as &$r) {
+        if (!empty($r['recommendations_json'])) {
+            $dec = json_decode($r['recommendations_json'], true);
+            $r['recommendations'] = $dec !== null ? $dec : [];
+        } else {
+            $r['recommendations'] = [];
+        }
+
+        if (!empty($r['install_parts_json'])) {
+            $dec2 = json_decode($r['install_parts_json'], true);
+            $r['install_parts'] = $dec2 !== null ? $dec2 : [];
+        } else {
+            $r['install_parts'] = [];
+        }
+
+        unset($r['recommendations_json'], $r['install_parts_json']);
+    }
+    unset($r);
+
+    echo json_encode([
+        'success' => true,
+        'data' => $rows,
+        'pagination' => [
+            'page' => $page,
+            'limit' => $limit,
+            'total' => $total,
+            'total_pages' => $totalPages
+        ]
+    ], JSON_UNESCAPED_UNICODE);
+    
+} catch (PDOException $e) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false, 
+        'message' => 'Database error: ' . $e->getMessage()
+    ]);
+}
+?>
